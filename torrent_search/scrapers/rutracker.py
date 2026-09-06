@@ -85,7 +85,7 @@ MAX_PAGES = 10
 # Named forum presets (server-side scope narrowing via repeated f= params).
 # Preset keys are what the user types; labels are what humans read.
 FORUM_PRESETS: dict[str, dict] = {
-    "hires": {
+    "hi-res": {
         "label": "Hi-Res (lossless stereo/multichannel music)",
         "forums": [1163, 1164, 1396, 1397, 1755, 1757, 1884, 1885,
                    1890, 1893, 2302, 2303, 2345, 2346, 2512, 2513],
@@ -98,8 +98,26 @@ FORUM_PRESETS: dict[str, dict] = {
 }
 FORUM_PRESETS["dsd"] = {
     "label": "DSD everywhere (Hi-Res + Digitization)",
-    "forums": sorted(set(FORUM_PRESETS["hires"]["forums"])
+    "forums": sorted(set(FORUM_PRESETS["hi-res"]["forums"])
                      | set(FORUM_PRESETS["digitizations"]["forums"])),
+}
+FORUM_PRESETS["movies"] = {
+    "label": "Movies (foreign & Russian cinema, DVD/HD/UHD, cartoons, anime, theater, 3D)",
+    # Branch ids (7, 22, 124, 93, 2198, 718, 33) AND their leaves —
+    # tracker.php?f= is NOT recursive (verified live 2026-09-06: parent
+    # scope returns only the parent's own topics), so leaves are required.
+    "forums": [4, 7, 22, 33, 93, 124, 2198, 352, 511, 718, 921,
+               100, 101, 187, 252, 271, 312, 313, 572, 941, 1105, 1106,
+               1457, 1543, 1577, 1666, 1940, 1950, 2200, 2339],
+}
+FORUM_PRESETS["tv-series"] = {
+    "label": "TV Series (Russian, foreign, Latin American/Turkish/Indian, Asian)",
+    # f=26 is a discussion forum (0 torrent rows, verified live) — excluded.
+    "forums": [9, 32, 81, 91, 812, 920,
+               189, 842, 119, 242, 721, 819, 1102, 1117, 1120, 1171, 1214,
+               1359, 1417, 1531, 1803, 2366,
+               911, 704, 781, 823, 1301, 1493, 1539, 1574, 1606,
+               2100, 717, 915, 1242, 1938, 2102, 2103, 2104, 2412],
 }
 
 # Full directory of selectable forums with descriptive names, grouped by
@@ -141,6 +159,98 @@ FORUM_DIRECTORY: list[tuple[str, list[tuple[int, str]]]] = [
         (1835, "Rap / Hip-Hop / Reggae / Ska / Dub"),
         (2301, "Jazz / blues"),
         (2401, "Soviet estrada / retro"),
+    ]),
+    ("Movies — branch 7 (Foreign Cinema)", [
+        (7, "Foreign Cinema — all (branch)"),
+        (187, "World cinema classics"),
+        (2200, "Films 2016-2020"),
+        (1950, "Films 2021-2025"),
+        (252, "Films 2026"),
+    ]),
+    ("Movies — branch 22 (Russian Cinema)", [
+        (22, "Russian Cinema — all (branch)"),
+        (941, "Soviet cinema"),
+        (1666, "Children's domestic films"),
+    ]),
+    ("Movies — branch 124 (Art-house & Auteur)", [
+        (124, "Art-house — all (branch)"),
+        (1543, "Short films"),
+        (1577, "Animation (art-house)"),
+    ]),
+    ("Movies — branch 93 (DVD Video)", [
+        (93, "DVD Video — all (branch)"),
+        (101, "Foreign DVD"),
+        (100, "Russian DVD"),
+        (572, "Art-house DVD"),
+    ]),
+    ("Movies — branch 2198 (HD Video)", [
+        (2198, "HD Video — all (branch)"),
+        (313, "Foreign HD"),
+        (312, "Russian HD"),
+        (2339, "Art-house HD"),
+    ]),
+    ("Movies — branch 718 (UHD Video)", [
+        (718, "UHD Video — all (branch)"),
+        (1457, "Foreign UHD"),
+        (1940, "Russian UHD"),
+        (271, "Art-house UHD"),
+    ]),
+    ("Movies — standalone forums", [
+        (4, "Cartoons"),
+        (921, "Animated series"),
+        (33, "Anime — all (branch)"),
+        (1106, "Ongoing anime (HD)"),
+        (1105, "Anime (HD)"),
+        (511, "Theater"),
+        (352, "3D / stereoscopic cinema"),
+    ]),
+    ("TV Series — branch 9 (Russian)", [
+        (9, "Russian series — all (branch)"),
+        (32, "Old Russian series"),
+        (81, "Russian series (HD)"),
+        (812, "Russian series (UHD)"),
+        (920, "Russian series (DVD)"),
+        (91, "Russian series (DVD, legacy)"),
+    ]),
+    ("TV Series — branch 189 (Foreign)", [
+        (189, "Foreign series — all (branch)"),
+        (842, "New & currently airing"),
+        (1803, "New shows (HD)"),
+        (2366, "Foreign series (HD)"),
+        (119, "Foreign series (UHD)"),
+        (1171, "New shows (UHD)"),
+        (1417, "Foreign series (DVD)"),
+        (242, "UK & Irish"),
+        (819, "Scandinavian"),
+        (1531, "Spanish"),
+        (721, "Italian"),
+        (1102, "European"),
+        (1120, "African & Middle Eastern"),
+        (1117, "Canadian"),
+        (1359, "Japanese"),
+        (1214, "Multi-country co-productions"),
+    ]),
+    ("TV Series — branch 911 (Latin America / Turkey / India)", [
+        (911, "Branch — all"),
+        (1493, "Argentine"),
+        (1301, "Brazilian"),
+        (704, "Venezuelan"),
+        (1574, "Indian"),
+        (1539, "Colombian"),
+        (823, "Mexican"),
+        (1606, "Turkish"),
+        (781, "Portuguese"),
+    ]),
+    ("TV Series — branch 2100 (Asian)", [
+        (2100, "Asian series — all (branch)"),
+        (717, "Chinese"),
+        (915, "Japanese"),
+        (1242, "Thai"),
+        (2412, "Vietnamese"),
+        (1938, "Taiwanese"),
+        (2104, "Indonesian"),
+        (2102, "Philippine"),
+        (2103, "Malaysian"),
     ]),
 ]
 

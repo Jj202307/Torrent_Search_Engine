@@ -196,6 +196,48 @@ def parse_index_spec(spec: str, total: int) -> list[int]:
         indices.update(range(start, end + 1))
     return sorted(indices)
 
+_HELP_EPILOG = """\
+rutracker flags (server-side scoping; use with -s rutracker):
+  -C PRESET   scope the search to a named forum preset:
+              hi-res         Hi-Res lossless music (16 forums)
+              digitizations  rips of analog media (16 forums)
+              dsd            DSD everywhere = hi-res + digitizations (32 forums)
+              movies         foreign & Russian cinema, DVD/HD/UHD, cartoons,
+                             anime, theater, 3D (30 forums)
+              tv-series      Russian, foreign, Latin American/Turkish/Indian,
+                             Asian series (40 forums)
+  -F ID       restrict to specific forum ids, repeatable (e.g. -F 1755 -F 1757;
+              see -L for ids with descriptive names)
+  -P N        fetch N server pages of 50 rows (max 10 = the server's 500-row
+              hard cap; 5s spacing protects the Cloudflare clearance);
+              replaces --page/--limit in rutracker mode
+  -L          list presets and all forum ids with descriptive names, then exit
+  tip: a preset works alone (no query) to browse latest posts, but on the big
+  movies / tv-series scopes the server caps results at 500 and pages arrive
+  forum-by-forum -- pair the preset with a search term for mixed, relevant
+  results across all forums.
+
+examples:
+  # search movies branches for 'dune', two server pages (up to 100 rows)
+  torrent-search 'dune' -s rutracker -C movies -P 2
+
+  # TV series: 'severance' across all series branches, seeders filter
+  torrent-search 'severance' -s rutracker -C tv-series --min-seeders 3
+
+  # new 4K movies: query + quality filter narrows the movies scope
+  torrent-search '2026' -s rutracker -C movies -q 2160p
+
+  # browse newest posts in the Hi-Res music preset (3 pages of 50)
+  torrent-search -s rutracker -C hi-res -P 3
+
+  # DSD material everywhere, then keep only DSD/SACD/DSF/DFF titles
+  torrent-search 'DSD' -s rutracker -C dsd --codec dsd
+
+  # two specific music forums by id, deep-paged
+  torrent-search 'flac' -s rutracker -F 1755 -F 1756 -P 2
+"""
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="torrent-search",
@@ -204,6 +246,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "quotes and ! prefix (ex. '!480p') works the same for --quality, "
             "--codec, --source-type and --hdr"
         ),
+        epilog=_HELP_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("query", nargs="?", help="Search query")
     parser.add_argument("--sources", "-s", help="Comma-separated source names (default: all)")
@@ -220,22 +264,22 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--page", type=int, default=1, help="Result page to display (2 = next --limit results)")
     parser.add_argument("--sort", choices=["seeders", "size"], default="seeders", help="Sort results by")
     rt = _rutracker_module()
-    rt_choices = sorted(rt.FORUM_PRESETS) if rt else ["dsd", "digitizations", "hires"]
+    rt_choices = sorted(rt.FORUM_PRESETS) if rt else ["digitizations", "dsd", "hi-res", "movies", "tv-series"]
     if rt:
         rt_cat_help = ("RuTracker only (use with -s rutracker): scope the search server-side to a named "
                        "preset — " + "; ".join(f"{k} = {rt.FORUM_PRESETS[k]['label']}" for k in rt_choices)
                        + ". Usable alone (no query) to browse latest posts")
     else:
-        rt_cat_help = "RuTracker only: scope the search server-side (hires / digitizations / dsd)"
-    parser.add_argument("--rt-cat", dest="rt_cat", choices=rt_choices, metavar="PRESET", help=rt_cat_help)
-    parser.add_argument("--rt-forum", dest="rt_forum", action="append", type=int, metavar="ID",
+        rt_cat_help = "RuTracker only: scope the search server-side (hi-res / digitizations / dsd / movies / tv-series)"
+    parser.add_argument("--rt-cat", "-C", dest="rt_cat", choices=rt_choices, metavar="PRESET", help=rt_cat_help)
+    parser.add_argument("--rt-forum", "-F", dest="rt_forum", action="append", type=int, metavar="ID",
                         help="RuTracker only: forum id, repeatable (e.g. --rt-forum 1755 --rt-forum 1757). "
                              "Run --rt-list-forums to see ids with descriptive names")
-    parser.add_argument("--rt-pages", dest="rt_pages", type=int, default=1, metavar="N",
+    parser.add_argument("--rt-pages", "-P", dest="rt_pages", type=int, default=1, metavar="N",
                         help="RuTracker only: server pages to fetch, 50 rows each (max 10 = the server's "
                              "500-row hard cap; 5s spacing protects the Cloudflare clearance). "
                              "This is the paging mechanism in --rt mode — --page/--limit are ignored there")
-    parser.add_argument("--rt-list-forums", dest="rt_list_forums", action="store_true",
+    parser.add_argument("--rt-list-forums", "-L", dest="rt_list_forums", action="store_true",
                         help="List RuTracker presets and forum ids with descriptive names, then exit")
     parser.add_argument("--format", choices=["table", "json", "simple"], default="table", help="Output format")
     parser.add_argument("--timeout", type=int, default=30, help="Total search timeout in seconds")
