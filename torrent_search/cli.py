@@ -207,15 +207,16 @@ rutracker flags (server-side scoping; use with -s rutracker):
               tv-series      Russian, foreign, Latin American/Turkish/Indian,
                              Asian series (40 forums)
   -F ID       restrict to specific forum ids, repeatable (e.g. -F 1755 -F 1757;
-              see -L for ids with descriptive names)
+              see -L for ids with descriptive names). Usable alone (no query)
+              to browse a forum's latest posts
   -P N        fetch N server pages of 50 rows (max 10 = the server's 500-row
               hard cap; 5s spacing protects the Cloudflare clearance);
               replaces --page/--limit in rutracker mode
   -L          list presets and all forum ids with descriptive names, then exit
-  tip: a preset works alone (no query) to browse latest posts, but on the big
-  movies / tv-series scopes the server caps results at 500 and pages arrive
-  forum-by-forum -- pair the preset with a search term for mixed, relevant
-  results across all forums.
+  tip: a preset or a forum (-F id) works alone (no query) to browse latest
+  posts, but the big movies / tv-series presets exceed the server's 500-row
+  cap and pages arrive forum-by-forum -- to browse, prefer single forums via
+  -F, or pair the preset with a search term.
 
 examples:
   # search movies branches for 'dune', two server pages (up to 100 rows)
@@ -235,6 +236,20 @@ examples:
 
   # two specific music forums by id, deep-paged
   torrent-search 'flac' -s rutracker -F 1755 -F 1756 -P 2
+
+  # browse a single forum with no query (pattern: any id from -L; -P N = N x 50)
+  torrent-search -s rutracker -F 1457 -P 2
+
+  # movies in UHD (4K) and HD, browsed
+  torrent-search -s rutracker -F 1457 -F 271        # foreign + art-house UHD
+  torrent-search -s rutracker -F 313 -F 312         # foreign + Russian HD
+
+  # keep up with new releases: 2026 films + 2021-2025 + airing shows
+  torrent-search -s rutracker -F 252 -F 1950 -F 1803 -P 2
+
+  # hi-res / digitized music by genre
+  torrent-search -s rutracker -F 1163 -P 2          # Dolby Atmos
+  torrent-search -s rutracker -F 1756               # digitized foreign rock
 """
 
 
@@ -274,6 +289,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rt-cat", "-C", dest="rt_cat", choices=rt_choices, metavar="PRESET", help=rt_cat_help)
     parser.add_argument("--rt-forum", "-F", dest="rt_forum", action="append", type=int, metavar="ID",
                         help="RuTracker only: forum id, repeatable (e.g. --rt-forum 1755 --rt-forum 1757). "
+                             "Usable alone (no query) to browse a forum's latest posts. "
                              "Run --rt-list-forums to see ids with descriptive names")
     parser.add_argument("--rt-pages", "-P", dest="rt_pages", type=int, default=1, metavar="N",
                         help="RuTracker only: server pages to fetch, 50 rows each (max 10 = the server's "
