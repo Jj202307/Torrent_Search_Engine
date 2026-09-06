@@ -173,12 +173,14 @@ Registration touch points per new source: `base.py` Source enum, `config.py` SIT
 - Alt clients: `--client qbittorrent` already works via PATH fallback; qBittorrent recommended if BiglyBT is dropped (magnet argv works cold+warm via single-instance IPC). ktorrent/rtorrent have handoff caveats.
 - BiglyBT flatpak data: `~/.var/app/com.biglybt.BiglyBT/.biglybt/` (downloads.config, torrents/, logs/); stop with `flatpak kill com.biglybt.BiglyBT`.
 
-## RuTracker status (open)
+## RuTracker status (WORKING — Firefox cookie bridge, 2026-09-06)
 
-- Cloudflare managed challenge on login.php/tracker.php defeats httpx, curl_cffi, playwright chromium (headless+headed), patchright chromium/firefox headless. Firefox engine passes for the real user (their Brave loops — Brave farbling/fingerprint randomization is the culprit there; per-site fix: Shields → Block fingerprinting OFF).
-- `.env` now has real creds (RUTRACKER_USERNAME/PASSWORD); `_login()` failure was the original silent-zero-results bug.
-- Turnstile-click experiment script parked at `/tmp/opencode/rt_turnstile_click.py` (headed patchright firefox, clicks challenges.cloudflare.com iframe, saves storage state). Never run.
-- Alternative once user passes CF manually in a real browser: harvest `bb_data` session cookie into the scraper's persistent session.
+- **Bypass design**: harvest `cf_clearance` + `bb_session` cookies from the local Firefox profile (`~/.mozilla/firefox/*/cookies.sqlite`, copied to temp to dodge locks) and replay them through `curl_cffi` `AsyncSession(impersonate="firefox135")` with UA `…Firefox/153.0` (must match the cookie-issuing browser). `_harvest_firefox_cookies()` in rutracker.py; login = cookies present, no probe request.
+- **Critical: request volume burns the clearance.** A 50-fetch burst (magnet conversion for all results at search time) made CF re-challenge the replay client; invisible auto-rotated clearances do NOT replay. A **checkbox-solved** clearance (user clicks verification manually in Firefox) replays fine. Search is now exactly 1 request (`tracker.php`); magnets are fetched only per downloaded torrent.
+- **If searches come back empty**: open `https://rutracker.org/forum/tracker.php?nm=<anything>` in Firefox — if a verification box appears, click it — then re-run. That mints a replayable clearance. (Forum index is NOT CF-guarded; only login.php/tracker.php/dl.php are.)
+- Parser: 10-td rows — td2 category, td3 title (`a.tLink`), td4 uploader, td5 `td.tor-size` (`data-ts_text` = exact bytes; contains `a.tr-dl` → `dl.php?t=<id>` .torrent link), td6 seeders, td7 leechers, td9 added. windows-1251. `fetch_torrent_magnet()` (module-level) fetches dl.php through a fresh cookie session; `download.ensure_magnet` routes `rutracker.org` URLs to it (plain httpx can't reach dl.php).
+- Dead ends proven: httpx/curl_cffi direct (403), playwright+patchright chromium any mode, patchright firefox headless+headed (challenge starts, never completes), turnstile-iframe click (widget iframe never renders under automation), real Firefox binary headless via Marionette (`navigator.webdriver` → challenge stalls 46s+; fresh-clearance replay blocked). Brave in general: farbling breaks Turnstile (per-site Shields → Block fingerprinting OFF fixes the browser itself).
+- Latent bug fixed en route: old code called `self._decode(...)` (module function, not method) — AttributeError swallowed by bare except → always `[]` even without CF.
 
 ## Filter/CLI knowledge (4K aliases + ! negation — implemented 2026-09-06)
 

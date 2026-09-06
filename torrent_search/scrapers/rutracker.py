@@ -1,18 +1,61 @@
-"""RuTracker.org torrent scraper (login required, windows-1251)."""
+"""RuTracker.org torrent scraper (login + windows-1251).
 
-import httpx
+rutracker.org sits behind a Cloudflare managed challenge that 403s every
+plain HTTP client, and the forum needs a login. The working bypass:
+harvest the cf_clearance + bb_session cookies from the user's local
+Firefox profile (where the challenge was passed and the login done by
+hand) and replay them through curl_cffi's Firefox TLS impersonation.
+The session lives as long as the Firefox login does — if searches come
+back empty, re-login on rutracker.org in Firefox.
+"""
+
+import glob
+import os
+import re
+import shutil
+import sqlite3
+import tempfile
+from urllib.parse import urljoin, urlencode
+
 from bs4 import BeautifulSoup
-from urllib.parse import urlencode, urljoin
+from curl_cffi.requests import AsyncSession
 
 from ..base import BaseScraper, SearchResult, Source
 from ..config import (
     SITE_URLS,
     DEFAULT_TIMEOUT,
-    DEFAULT_USER_AGENT,
     MAX_RESULTS_PER_SOURCE,
     CREDENTIALS,
 )
+from ..download import magnet_from_torrent
 from ..normalizer import parse_size
+
+
+async def fetch_torrent_magnet(title: str, torrent_url: str) -> str:
+    """Fetch a rutracker .torrent via the Firefox-cookie session.
+
+    dl.php sits behind the same Cloudflare clearance + login cookies as
+    the forum, so it is unreachable for plain HTTP clients — the
+    downloader must go through this path. Returns '' on any failure.
+    """
+    s = AsyncSession(
+        impersonate="firefox135",
+        timeout=DEFAULT_TIMEOUT,
+        headers={
+            "User-Agent": FIREFOX_UA,
+            "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+        },
+        cookies=_harvest_firefox_cookies(),
+    )
+    try:
+        resp = await s.get(torrent_url)
+        if resp.status_code != 200 or resp.content[:1] != b"d":
+            return ""
+        return magnet_from_torrent(resp.content, title)
+    except Exception:
+        return ""
+    finally:
+        await s.close()
 
 BASE_URL = SITE_URLS["rutracker"]
 LOGIN_PAGE = f"{BASE_URL}/forum/login.php"
@@ -32,32 +75,59 @@ CATEGORY_IDS = {
 }
 SORT_MAP = {"name": 1, "seeders": 2, "size": 3, "leechers": 4}
 
+# Must match the browser the cookies were issued to (Firefox 153 ESR on
+# this machine) — cf_clearance is bound to the User-Agent.
+FIREFOX_UA = "Mozilla/5.0 (X11; Linux x86_64; rv:153.0) Gecko/20100101 Firefox/153.0"
+
 USER_FIELDS = ("login_username", "username", "user", "login", "id")
 PASS_FIELDS = ("login_password", "password", "pass", "passwd")
 
 
-def _decode(resp: httpx.Response) -> str:
-    enc = resp.encoding
-    if enc and enc.lower() not in ("utf-8", "utf8", "ascii"):
+def _harvest_firefox_cookies() -> dict[str, str]:
+    """Pull rutracker.org cookies from every local Firefox profile.
+
+    The sqlite DBs are copied first — Firefox holds locks on the lives.
+    """
+    cookies: dict[str, str] = {}
+    for db in glob.glob(os.path.expanduser("~/.mozilla/firefox/*/cookies.sqlite")):
+        tmp = None
         try:
-            return resp.content.decode(enc, errors="replace")
-        except LookupError:
-            pass
-    for e in ("utf-8", "windows-1251"):
-        try:
-            return resp.content.decode(e)
-        except (UnicodeDecodeError, LookupError):
+            tmp = tempfile.mkdtemp(prefix="ffck_")
+            copy = os.path.join(tmp, "cookies.sqlite")
+            shutil.copy2(db, copy)
+            for ext in ("wal", "shm"):
+                if os.path.exists(f"{db}-{ext}"):
+                    shutil.copy2(f"{db}-{ext}", f"{copy}-{ext}")
+            con = sqlite3.connect(copy)
+            try:
+                for name, value in con.execute(
+                    "select name, value from moz_cookies"
+                    " where host like '%rutracker.org'"
+                ):
+                    cookies[name] = value
+            finally:
+                con.close()
+        except Exception:
             continue
-    return resp.text
+        finally:
+            if tmp:
+                shutil.rmtree(tmp, ignore_errors=True)
+    return cookies
+
+
+def _decode(resp) -> str:
+    ctype = resp.headers.get("content-type", "")
+    m = re.search(r"charset=([\w-]+)", ctype, re.IGNORECASE)
+    enc = m.group(1) if m else "windows-1251"
+    try:
+        return resp.content.decode(enc, errors="replace")
+    except LookupError:
+        return resp.content.decode("windows-1251", errors="replace")
 
 
 def _digits(text: str) -> int:
     digits = "".join(ch for ch in text if ch.isdigit())
     return int(digits) if digits else 0
-
-
-def _abs(base: str, href: str) -> str:
-    return urljoin(base, href)
 
 
 def _has_login_form(html: str) -> bool:
@@ -87,18 +157,19 @@ class RuTrackerScraper(BaseScraper):
     source = Source.RUTRACKER
 
     def __init__(self):
-        self._client: httpx.AsyncClient | None = None
+        self._client: AsyncSession | None = None
         self._logged_in = False
 
-    async def _get_client(self) -> httpx.AsyncClient:
+    async def _get_client(self) -> AsyncSession:
         if self._client is None:
-            self._client = httpx.AsyncClient(
+            self._client = AsyncSession(
+                impersonate="firefox135",
                 timeout=DEFAULT_TIMEOUT,
                 headers={
-                    "User-Agent": DEFAULT_USER_AGENT,
+                    "User-Agent": FIREFOX_UA,
                     "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
                 },
-                follow_redirects=True,
+                cookies=_harvest_firefox_cookies(),
             )
         return self._client
 
@@ -106,12 +177,22 @@ class RuTrackerScraper(BaseScraper):
         if self._logged_in:
             return True
         creds = CREDENTIALS.get(self.source.value, {})
+        client = await self._get_client()
+
+        # Primary path: the Firefox-harvested session cookies. No probe
+        # request — the search itself is the probe (one request total;
+        # request volume is what burns the Cloudflare clearance).
+        if client.cookies.get("cf_clearance") and client.cookies.get("bb_session"):
+            self._logged_in = True
+            return True
+
+        # Legacy path: form login. Unusable while Cloudflare guards
+        # login.php with a JS challenge, kept for a future without it.
         if not creds.get("username") or not creds.get("password"):
             return False
-        client = await self._get_client()
         try:
             page = await client.get(LOGIN_PAGE)
-            html = self._decode(page)
+            html = _decode(page)
             if not _has_login_form(html):
                 self._logged_in = True
                 return True
@@ -119,10 +200,7 @@ class RuTrackerScraper(BaseScraper):
             resp = await client.post(LOGIN_PAGE, data=data)
             if resp.status_code >= 400:
                 return False
-            if client.cookies.get("bb_data"):
-                self._logged_in = True
-            else:
-                self._logged_in = not _has_login_form(self._decode(resp))
+            self._logged_in = not _has_login_form(_decode(resp))
         except Exception:
             return False
         return self._logged_in
@@ -143,9 +221,9 @@ class RuTrackerScraper(BaseScraper):
                 params["o"] = "1" if len(parts) > 1 and parts[1].lower() == "asc" else "2"
         return f"{SEARCH_URL}?{urlencode(params)}"
 
-    def _parse_results(self, html: str, category: str = "", base_url: str | None = None) -> list[SearchResult]:
+    def _parse_results(self, html: str, base_url: str | None = None) -> list[SearchResult]:
         soup = BeautifulSoup(html, "lxml")
-        table = soup.select_one("table.forumline") or soup.find("table")
+        table = soup.select_one("table.forumline")
         if not table:
             return []
         base = base_url or BASE_URL
@@ -158,28 +236,25 @@ class RuTrackerScraper(BaseScraper):
             if not title:
                 continue
             cells = tr.find_all("td")
-            if len(cells) < 3:
-                continue
             href = link.get("href", "")
-            page_url = _abs(base, href)
-            cat = category
-            if not cat and cells[0].find("img"):
-                img = cells[0].find("img")
-                cat = img.get("title") or img.get("alt") or ""
-            size_idx = next(
-                (i for i, td in enumerate(cells) if parse_size(td.get_text(" ", strip=True)) > 0),
-                -1,
-            )
+            page_url = urljoin(base, href)
+
+            cat = cells[2].get_text(" ", strip=True) if len(cells) > 2 else ""
             size_bytes = 0
-            seeders = leechers = 0
-            added = ""
-            if size_idx >= 0:
-                size_bytes = parse_size(cells[size_idx].get_text(" ", strip=True))
-                if size_idx + 1 < len(cells):
-                    seeders = _digits(cells[size_idx + 1].get_text(" ", strip=True))
-                if size_idx + 2 < len(cells):
-                    leechers = _digits(cells[size_idx + 2].get_text(" ", strip=True))
-                added = cells[size_idx + 4].get_text(" ", strip=True) if size_idx + 4 < len(cells) else cells[-1].get_text(" ", strip=True)
+            size_td = tr.select_one("td.tor-size")
+            if size_td is not None:
+                ts = size_td.get("data-ts_text") or ""
+                size_bytes = int(ts) if ts.isdigit() else parse_size(size_td.get_text(" ", strip=True))
+            seeders = _digits(cells[6].get_text(" ", strip=True)) if len(cells) > 6 else 0
+            leechers = _digits(cells[7].get_text(" ", strip=True)) if len(cells) > 7 else 0
+            uploader = cells[4].get_text(" ", strip=True) if len(cells) > 4 else ""
+            added = cells[9].get_text(" ", strip=True) if len(cells) > 9 else ""
+
+            # The .torrent endpoint rides on the size link (dl.php?t=<id>)
+            # and needs the authenticated session — see search().
+            dl = tr.select_one("a.tr-dl[href]")
+            torrent_url = urljoin(base, dl.get("href")) if dl else page_url
+
             results.append(SearchResult(
                 title=title,
                 source=self.source,
@@ -187,9 +262,10 @@ class RuTrackerScraper(BaseScraper):
                 size_bytes=size_bytes,
                 seeders=seeders,
                 leechers=leechers,
-                torrent_url=page_url,
+                torrent_url=torrent_url,
                 page_url=page_url,
                 added=added,
+                uploader=uploader,
             ))
             if len(results) >= MAX_RESULTS_PER_SOURCE:
                 break
@@ -204,7 +280,7 @@ class RuTrackerScraper(BaseScraper):
             if resp.status_code in (403, 429, 503):
                 return []
             resp.raise_for_status()
-            return self._parse_results(self._decode(resp), kwargs.get("category", ""), str(resp.url))
+            return self._parse_results(_decode(resp), str(resp.url))
         except Exception:
             return []
 
@@ -218,5 +294,5 @@ class RuTrackerScraper(BaseScraper):
 
     async def close(self):
         if self._client:
-            await self._client.aclose()
+            await self._client.close()
             self._client = None

@@ -135,6 +135,14 @@ async def ensure_magnet(r: SearchResult) -> bool:
     """
     if r.magnet or not r.torrent_url:
         return bool(r.magnet)
+    if "rutracker.org" in r.torrent_url:
+        # dl.php needs the Cloudflare-cleared Firefox session — the
+        # generic HTTP fetch below cannot reach it.
+        from .scrapers.rutracker import fetch_torrent_magnet
+        r.magnet = await fetch_torrent_magnet(r.title, r.torrent_url)
+        if r.magnet:
+            r.info_hash = r.magnet.split("btih:", 1)[1].split("&", 1)[0]
+            return True
     for attempt in range(3):
         try:
             async with httpx.AsyncClient(
