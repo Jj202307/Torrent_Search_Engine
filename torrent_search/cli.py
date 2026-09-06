@@ -250,6 +250,123 @@ examples:
   # hi-res / digitized music by genre
   torrent_search_dl -s rutracker -F 1163 -P 2          # Dolby Atmos
   torrent_search_dl -s rutracker -F 1756               # digitized foreign rock
+
+forum id reference (sorted by category; use -F <id> to scope a search):
+
+  MUSIC
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    Hi-Res — branch 1299
+      1163 Dolby Atmos          1164 Classical vocal / Crossover  1396 Alt / Punk / Indie
+      1397 Soundtracks          1755 Rock                 1757 Prog / Art Rock
+      1884 Classical instrumental  1885 Pop                  1890 Metal
+      1893 Electronic           2302 Jazz (Cool / Fusion / Avant-Garde)  2303 Vocal Jazz / Funk / Soul / R&B
+      2345 Blues                2346 Bop                  2512 Other genres
+      2513 New Age / Relax / Flamenco
+
+    Digitization — branch 2219
+      123 Alt / Punk / Indie    239 Russian pop           450 Instrumental pop
+      506 Folk / ethno          974 Other genres          1217 Chanson / military
+      1444 Foreign pop          1625 Soundtracks / musicals  1660 Classical
+      1754 Electronic           1756 Foreign rock         1758 Russian rock
+      1766 Metal                1835 Rap / Hip-Hop / Reggae / Ska / Dub  2301 Jazz / blues
+      2401 Soviet estrada / retro
+
+  TV SERIES
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    Russian (branch 9)
+        9 Russian series — all    79 Ugly Girlfriend        80 Rural Detective
+       81 Russian series (HD)     91 I Know Your Secrets   104 Психология преступления
+      175 Sled (The Trail)       188 Moscow Mysteries      812 Russian series (UHD)
+      920 Russian series (DVD)   990 Univer / Sashatanya  1408 Female Version
+     1535 Wartime-law detective
+
+    Foreign SD (branch 189)
+      110 X-Files               121 Twin Peaks            184 Shameless (US)
+      189 Foreign — all         235 US & Canada (SD)      242 UK & Ireland (SD)
+      372 Supernatural          387 Multi-country co-pro   489 Ex-USSR (SD)
+      504 Sopranos              507 Big Bang Theory        536 Suits
+      721 Italian (SD)          819 Scandinavian (SD)      842 New & airing
+     1102 European (SD)        1120 Africa & Middle East  1144 Walking Dead + Fear TWD
+     1214 Australia & NZ (SD)  1359 Web series & pilots   1417 Breaking Bad
+     1449 Game of Thrones      1531 Spanish (SD)
+
+    Foreign HD (branch 2366)
+      193 UK & Ireland (HD)     265 Game of Thrones (HD)   266 US & Canada (HD)
+      825 Australia & NZ (HD)  1248 Ex-USSR (HD)          1288 Multi-country co-pro (HD)
+     1459 European (HD)        1463 Africa & Middle East   1690 Scandinavian (HD)
+     1803 New & airing (HD)    2366 Foreign HD — all      2370 Twin Peaks (HD)
+     2396 Big Bang Theory (HD) 2398 Walking Dead (HD)     2404 Supernatural (HD)
+     2405 X-Files (HD)
+
+    Foreign UHD (branch 119)
+      119 Foreign UHD — all     173 Multi-country co-pro   625 European (UHD)
+     1171 New & airing (UHD)   1669 US & Canada (UHD)     1949 Australia & NZ (UHD)
+     2393 UK & Ireland (UHD)
+
+    LatAm / Turkey / India (branch 911)
+      325 Argentine             534 Brazilian              594 Venezuelan
+      607 Colombian             694 Mexican                704 Turkish
+      781 Multi-country co-pro  911 LatAm/Turkey/India     1301 Indian
+     1539 LatAm subtitled      1574 LatAm dubbed
+
+    Asian (branch 2100)
+      717 Chinese               820 Asian (UHD)            915 Korean (SD)
+     1242 Korean (HD)          1939 Japanese              2100 Asian — all
+     2102 Asian clips          2412 Thailand/Indonesia/Singapore
+
+  MOVIES
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    Foreign Cinema (branch 7)
+        7 Foreign — all         166 Untranslated           185 Audio tracks
+      187 World classics       212 Film collections       252 Films 2026
+      254 Foreign actors       505 Indian cinema           771 Foreign directors
+      934 Asian cinema        1235 Grindhouse            1454 Fan translations
+     1640 Curated links       1692 Translator teams      1950 Films 2021-2025
+     2090 Films pre-1990      2091 Films 2001-2005       2092 Films 2006-2010
+     2093 Films 2011-2015     2200 Films 2016-2020       2221 Films 1991-2000
+     2373 Pro dubbing         2374 Voiceover releases    2459 Short films
+     2540 Ex-USSR films
+
+    Russian Cinema (branch 22)
+       22 Russian — all        106 RU/USSR nat'l langs    376 Directorial debuts
+      772 Russian directors    789 Russian actors          941 Soviet cinema
+     1666 Children's domestic
+
+    DVD (branch 93)
+       93 DVD Video            100 Russian DVD            101 Foreign DVD
+      572 Art-house (DVD)      877 Ex-USSR DVD            905 World classics DVD
+     1576 Asian DVD           1670 Grindhouse DVD        2220 Indian DVD
+
+    HD (branch 2198)
+      140 Indian HD            194 Grindhouse HD          312 Russian HD
+      313 Foreign HD           653 UHD announcements     1247 Ex-USSR HD
+     2198 HD Video            2199 World classics HD     2201 Asian HD
+     2339 Art-house HD
+
+    UHD (branch 718)
+      271 Art-house UHD        272 Asian UHD              718 UHD Video
+      775 World classics UHD  1457 Foreign UHD           1940 Russian UHD
+
+    Art-house & Auteur (branch 124)
+      124 Art-house — all      149 Filmographies          709 Documentary
+     1543 Short films         1577 Animation
+
+    Cartoons / Anime / Theater / 3D
+        4 Cartoons             33 Anime — all             84 Cartoons (UHD)
+      181 Cartoons untranslated  208 Domestic cartoons    209 Foreign cartoons
+      352 3D — all            404 Покемоны               484 Foreign cartoon shorts
+      498 Animated series UHD  511 Theater                514 3D Sport
+      521 Foreign cartoons DVD  539 Domestic cartoons     549 3D movies
+      599 Anime (DVD)         809 Anime audio tracks     815 Animated series SD
+      816 Animated series DVD  822 Cartoon collections    921 Animated series
+      930 Foreign cartoons HD 1105 Anime (HD)           1106 Ongoing anime HD
+     1213 3D cartoons        1277 Donghua               1386 Anime art & scans
+     1387 AMV & clips        1389 Anime (SD)            1390 Naruto
+     1391 Anime player       1460 Animated series HD    1493 Theater — untranslated
+     1642 Gundam             1900 Domestic cartoons DVD  2097 3D clips
+     2109 3D documentaries   2183 Ex-USSR cartoons      2258 Foreign cartoon shorts DVD
+     2343 Domestic cartoons HD  2365 Foreign cartoon shorts HD  2484 Anime artbooks
+     2491 Anime QC           2544 One Piece
 """
 
 
