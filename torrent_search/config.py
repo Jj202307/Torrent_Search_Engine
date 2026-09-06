@@ -75,6 +75,23 @@ CREDENTIALS = {
 # Maximum results per scraper
 MAX_RESULTS_PER_SOURCE = 50
 
+
+def set_max_results_per_source(n: int):
+    """Raise the per-source result cap, including on already-imported scrapers.
+
+    Scraper modules bind MAX_RESULTS_PER_SOURCE at import time, so deep
+    pagination (CLI --page) patches each loaded module's global directly.
+    """
+    global MAX_RESULTS_PER_SOURCE
+    if n > MAX_RESULTS_PER_SOURCE:
+        MAX_RESULTS_PER_SOURCE = n
+    import sys
+    for name, mod in list(sys.modules.items()):
+        if name.startswith("torrent_search.scrapers.") and mod is not None:
+            current = getattr(mod, "MAX_RESULTS_PER_SOURCE", None)
+            if current is not None and current < n:
+                mod.MAX_RESULTS_PER_SOURCE = n
+
 # Base URLs
 SITE_URLS = {
     "tpb": "https://thepiratebay.org",

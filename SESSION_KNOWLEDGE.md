@@ -136,3 +136,59 @@ python3 -m torrent_search.cli --download 1,3-5 --client biglybt
 ./torrent_search.sh --install-aliases && source ~/.bashrc
 torrent_search_dl --help
 ```
+
+---
+
+# Session 2026-09-06 — additions
+
+## New sources added (16 → 19 scrapers)
+
+| Site | Route | Result shape | Notes |
+|---|---|---|---|
+| yourbittorrent.com | `/?q={query}` | title `a.yb-tname` + `^/torrent/\d+/` relative href; size/added `td[data-label=…]`; seeders `td.sd`, peers `td.pr`; category `a.yb-cat[title]` | `.torrent` at `/down/{id}.torrent` (200, bencode). Same injected t0r.space spam rows as TorLock — filtered by the relative-href requirement. IP got 403-flagged after burst probing; block is server-side, may clear. |
+| knaben.org | `/search/{query}` **path route** (the `?query=` form is a status-dashboard stub) | `tr` with `a[href^='magnet:']`; td[0] category, td[1] title+magnet, td[2] size, td[3] date, td[4] seeders, td[5] leechers, td[6] source site | Multi-tracker cached meta-search (aggregates TPB/YTS/etc). Magnet IS the row href; info_hash from btih. Best new general source. |
+| audiobookbay.lu | `/?s={query}` (WordPress) | `div.post`; title `postTitle h2 a` → `/abss/{slug}/`; File Size regex over post div; magnet/hash on detail page | Detail pages publish `Info Hash:` + `/downld0?downfs=` link, no magnet anchor → scraper rebuilds magnet from hash. ~9 results/page, semaphore(4) detail fetches. TCP-unreachable from this network (geo); verified via relay. |
+| snowfl.com | — | — | DROPPED: SPA with rotating-key JSON API; key vars no longer extractable from b.min.js. |
+
+Registration touch points per new source: `base.py` Source enum, `config.py` SITE_URLS + RATE_LIMITS, `scrapers/<name>.py`, `scrapers/__init__.py`, `cli.py` `_scraper_modules`.
+
+## Site liveness updates (2026-09-06)
+
+- **Dead**: yts.mx (stopped Jan 2026 — scraper already on yts.bz + movies-api.accel.li, both live; yts.gg = current official gateway), torrentgalaxy.to (memecoin promo), glodls, zooqle.to, btdb.to, 7torrents, torrents.io, torrent.by, ilcorsaronero.info (hijacked), rarbg family (2023).
+- **Robots-walled but alive** (policy call): torrent9.so, oxtorrent.co, cpasbien.run, btscene.cc, torrentproject2.net, katcr.co, animetosho.org (/search).
+- **Cloudflare-walled**: rutracker.org (managed challenge; see below), ext.to, bitsearch.to, kickasstorrents.to, bt4g.
+- **Verified live, not integrated**: rutor.info (`/search/{q}/0/0/0`, inline magnet+.torrent — best candidate), torrentfunk.com (+torrentfunk2.com mirror, `/all/torrents/{q}.html`), torrentdownloads.pro (`/search/?search={q}`).
+- Note: yourbitorrent.com (dead) ≠ yourbittorrent.com (live).
+
+## Bugs found & fixed (session 2)
+
+4. **TorLock parser**: first-`<a>`-in-row picked the category link (or spam mirror link) as title; positional columns off by one; `torrent_url` was an HTML page (BiglyBT fetched HTML, silently dropped). Fix: `a.tl-name[href]` anchor, `td.ts/tul/tdl` classes, real `.torrent` at `lt.t0r.space/tor/{id}.torrent`.
+5. **BiglyBT flatpak runner drops ALL CLI args** (root cause of "opens but nothing loads"): `/var/lib/flatpak/app/com.biglybt.BiglyBT/…/files/bin/biglybt-runner` is `exec /app/biglybt/biglybt` with no `"$@"`. Cold start booted argless; warm "StartSocket: passed startup args" message forwarded an EMPTY list. Fix in `download.py`: launch via `flatpak run --command=/app/biglybt/biglybt com.biglybt.BiglyBT` (main script forwards args correctly). Upstream flathub bug.
+6. **Cold-start race**: client launched with a URI isn't ready to receive it. Fix in `download.py`: `_READY_PROBES` (127.0.0.1:6880), launch first URI → poll listener up to 60s → resend all URIs (client dedupes), 0.25s stagger.
+7. **Magnet conversion flakiness** ("doesn't appear to be valid torrent file"): UA-less single-attempt fetch of `.torrent` mirrors failed under burst throttling → raw-URL fallback → BiglyBT fetched junk itself. Fix: `ensure_magnet` now sends DEFAULT_USER_AGENT, 3 attempts with backoff, bencode validation; summary marks `(direct URL — magnet conversion failed)` fallbacks.
+
+## Download pipeline (as of session 2)
+
+- `download.py` converts `.torrent` URLs to magnets client-side before handoff: fetch → bencode `_scan_torrent` (info-dict span + announce/announce-list trackers) → sha1 → `xt=urn:btih:` magnet with `dn`/`tr`. Hash verified against TPB's published magnet (e498d30e…). Needed because the BiglyBT flatpak sandbox can't fetch some mirrors and can't read `/tmp`.
+- Alt clients: `--client qbittorrent` already works via PATH fallback; qBittorrent recommended if BiglyBT is dropped (magnet argv works cold+warm via single-instance IPC). ktorrent/rtorrent have handoff caveats.
+- BiglyBT flatpak data: `~/.var/app/com.biglybt.BiglyBT/.biglybt/` (downloads.config, torrents/, logs/); stop with `flatpak kill com.biglybt.BiglyBT`.
+
+## RuTracker status (open)
+
+- Cloudflare managed challenge on login.php/tracker.php defeats httpx, curl_cffi, playwright chromium (headless+headed), patchright chromium/firefox headless. Firefox engine passes for the real user (their Brave loops — Brave farbling/fingerprint randomization is the culprit there; per-site fix: Shields → Block fingerprinting OFF).
+- `.env` now has real creds (RUTRACKER_USERNAME/PASSWORD); `_login()` failure was the original silent-zero-results bug.
+- Turnstile-click experiment script parked at `/tmp/opencode/rt_turnstile_click.py` (headed patchright firefox, clicks challenges.cloudflare.com iframe, saves storage state). Never run.
+- Alternative once user passes CF manually in a real browser: harvest `bb_data` session cookie into the scraper's persistent session.
+
+## Filter/CLI knowledge (assessment for 4K + exclude flags — not yet implemented)
+
+- All pattern filters (quality/codec/source-type/hdr) match `result.title` client-side; `QUALITY_PATTERNS['2160p']` already matches `2160p|4k|uhd`, `['1080p']` matches `1080p|fhd|full hd`. Only YTS has server-side quality (`QUALITY_MAP` incl. `4k`→`2160p`).
+- `-q 4k` today = unknown key → filters everything out. Planned: alias 4k/uhd→2160p, fhd→1080p at flag parsing (~15 lines).
+- `-qx 480p` syntax impossible in argparse (value-taking `-q` swallows `x`). Chosen design: value negation `-q '!480p'` handled in `FilterEngine._check_pattern` (covers all filter flags uniformly). A `-x` preprocessor rewriting argv is possible (~10 lines) but stateful/fragile — rejected. Interim: `--must-not-contain '2160p|4k|uhd'` works today.
+
+## Pagination (added 2026-09-06)
+
+- `--page N` (default 1) slices the merged → filtered → sorted list: rows `[(N-1)*limit : N*limit]`, with `--limit` as page size. Uniform across all 19 sources; the saved index (`last_results.json`) and `--download` numbering always match the displayed page.
+- Deep pages (`--page > 1`) raise the per-source fetch cap via `config.set_max_results_per_source(page × limit)` — scrapers bind the constant at import time, so the helper patches each imported scraper module's global.
+- Bound: per-source depth is limited to what the site's first results page serves (knaben ~50 rows → page 11 empty; TorLock pages carry more). Multi-source pools stack, so aggregate pages go deeper.
+- Option B — true server-side per-site page params (1337x path page, YTS API `page`, rutracker `start`, yggtorrent `page`; knaben/torlock/yourbittorrent likely but unverified; TPB apibay and EZTVx RSS can't) — **deferred for later** per user (2026-09-06).

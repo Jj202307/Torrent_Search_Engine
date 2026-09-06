@@ -9,6 +9,12 @@ import re
 from dataclasses import dataclass, field
 from .base import SearchResult
 
+QUALITY_ALIASES = {
+    "4k": "2160p",
+    "uhd": "2160p",
+    "fhd": "1080p",
+}
+
 @dataclass
 class FilterSpec:
     min_seeders: int = 0
@@ -75,8 +81,36 @@ class FilterEngine:
     def _check_pattern(self, text: str, pattern_dict: dict[str, re.Pattern], allowed: list[str]) -> bool:
         if not allowed:
             return True  # no filter = pass
+        excludes = []
+        includes = []
         for key in allowed:
-            pat = pattern_dict.get(key) or pattern_dict.get(key.upper()) or pattern_dict.get(key.lower())
+            if key.startswith("!"):
+                excludes.append(key[1:])
+            else:
+                includes.append(key)
+
+        def resolve(key):
+            base = key.lower()
+            base = QUALITY_ALIASES.get(base, base)
+            triple = lambda d: d.get(base) or d.get(base.upper()) or d.get(base.lower())
+            pat = triple(pattern_dict)
+            if pat is None:
+                # key unknown in this axis: fall back to the engine's other pattern dicts
+                for other in (self.QUALITY_PATTERNS, self.CODEC_PATTERNS, self.SOURCE_PATTERNS, self.HDR_PATTERNS):
+                    if other is not pattern_dict:
+                        pat = triple(other)
+                        if pat:
+                            break
+            return pat
+
+        for key in excludes:
+            pat = resolve(key)
+            if pat and pat.search(text):
+                return False
+        if not includes:
+            return True
+        for key in includes:
+            pat = resolve(key)
             if pat and pat.search(text):
                 return True
         return False

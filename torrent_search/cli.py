@@ -4,6 +4,7 @@ import sys
 from typing import Any
 from .filters import FilterEngine, FilterSpec
 from .base import SearchResult, Source
+from .config import set_max_results_per_source
 from .download import download_results, print_download_summary
 from .state import load_results, save_results
 
@@ -173,7 +174,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("query", nargs="?", help="Search query")
     parser.add_argument("--sources", "-s", help="Comma-separated source names (default: all)")
     parser.add_argument("--min-seeders", type=int, default=0, help="Minimum seeders")
-    parser.add_argument("--quality", "-q", action="append", default=[], help="Quality: 2160p, 1080p, 720p, 480p")
+    parser.add_argument("--quality", "-q", action="append", default=[], help="Quality: 2160p/4k/uhd, 1080p/fhd, 720p, 480p; prefix ! to exclude")
     parser.add_argument("--codec", action="append", default=[], help="Codec: FLAC, AAC, DTS, etc.")
     parser.add_argument("--source-type", action="append", default=[], dest="source_types", help="Source type: REMUX, WEB-DL, BLURAY, etc.")
     parser.add_argument("--hdr", action="append", default=[], help="HDR: HDR, DOLBY_VISION, HDR10+")
@@ -181,7 +182,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-size", type=float, default=float("inf"), help="Maximum size in GB")
     parser.add_argument("--must-contain", action="append", default=[], help="Keyword that must be in title")
     parser.add_argument("--must-not-contain", action="append", default=[], help="Keyword that must NOT be in title")
-    parser.add_argument("--limit", type=int, default=50, help="Max total results")
+    parser.add_argument("--limit", type=int, default=50, help="Results per page (page size)")
+    parser.add_argument("--page", type=int, default=1, help="Result page to display (2 = next --limit results)")
     parser.add_argument("--sort", choices=["seeders", "size"], default="seeders", help="Sort results by")
     parser.add_argument("--format", choices=["table", "json", "simple"], default="table", help="Output format")
     parser.add_argument("--timeout", type=int, default=30, help="Total search timeout in seconds")
@@ -196,6 +198,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main():
     parser = build_arg_parser()
     args = parser.parse_args()
+
+    if args.page < 1:
+        parser.error("--page must be >= 1")
 
     if args.list_sources:
         print("Available sources:")
@@ -262,6 +267,11 @@ def main():
         must_not_contain=args.must_not_contain,
     )
 
+    # Deep pages need more than the default per-source cap to have anything
+    # to slice on single-source searches.
+    if args.page > 1:
+        set_max_results_per_source(args.page * args.limit)
+
     # Run search
     async def _run():
         all_source_results = await asyncio.wait_for(
@@ -283,8 +293,9 @@ def main():
         elif args.sort == "size":
             results.sort(key=lambda r: r.size_bytes, reverse=True)
         
-        # Limit
-        results = results[:args.limit]
+        # Limit (page-aware slice)
+        start = (args.page - 1) * args.limit
+        results = results[start:start + args.limit]
 
         # Save as the downloadable index, then display or download
         save_results(args.query, results)
