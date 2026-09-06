@@ -213,20 +213,20 @@ rutracker flags (server-side scoping; use with -s rutracker):
               hard cap; 5s spacing protects the Cloudflare clearance);
               replaces --page/--limit in rutracker mode
   -L          list presets and all forum ids with descriptive names, then exit
-  tip: a preset or a forum (-F id) works alone (no query) to browse latest
-  posts, but the big movies / tv-series presets exceed the server's 500-row
-  cap and pages arrive forum-by-forum -- to browse, prefer single forums via
-  -F, or pair the preset with a search term.
+  tip: for SEARCHES, scope with one or two forum ids (-F) — the server
+  silently loses matches when a query is combined with many forums (a whole
+  preset). Presets (-C) are for no-query browsing: music presets mix
+  normally; movies / tv-series hit the 500-row cap and page forum-by-forum.
 
 examples:
-  # search movies branches for 'dune', two server pages (up to 100 rows)
-  torrent_search_dl 'dune' -s rutracker -C movies -P 2
+  # search one forum: 'dune' in foreign-UHD movies (query + few ids = reliable)
+  torrent_search_dl 'dune' -s rutracker -F 1457 -q 2160p
 
-  # TV series: 'severance' across all series branches, seeders filter
-  torrent_search_dl 'severance' -s rutracker -C tv-series --min-seeders 3
+  # TV series: 'severance' in the US/Canada HD forum (find ids with -L)
+  torrent_search_dl 'severance' -s rutracker -F 266
 
-  # new 4K movies: query + quality filter narrows the movies scope
-  torrent_search_dl '2026' -s rutracker -C movies -q 2160p
+  # newest UHD movies, client-side quality filter (no query = browse)
+  torrent_search_dl -s rutracker -F 1457 -P 2 -q 2160p
 
   # browse newest posts in the Hi-Res music preset (3 pages of 50)
   torrent_search_dl -s rutracker -C hi-res -P 3
