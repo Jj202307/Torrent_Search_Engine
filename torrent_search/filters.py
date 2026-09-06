@@ -21,7 +21,7 @@ class FilterSpec:
     min_size_gb: float = 0.0
     max_size_gb: float = float("inf")
     qualities: list[str] = field(default_factory=list)   # '2160p', '1080p', '720p', '480p'
-    codecs: list[str] = field(default_factory=list)        # 'FLAC', 'ALAC', 'MP3', 'AAC', 'DTS'
+    codecs: list[str] = field(default_factory=list)        # 'FLAC', 'ALAC', 'MP3', 'AAC', 'DTS', 'DSD' (DSD|SACD|DSF|DFF)
     sources: list[str] = field(default_factory=list)       # 'REMUX', 'WEB-DL', 'BLURAY', 'HDRIP', 'DVDRIP', 'CAM'
     hdr: list[str] = field(default_factory=list)           # 'HDR', 'DOLBY_VISION', 'HDR10+'
     must_contain: list[str] = field(default_factory=list)
@@ -45,6 +45,7 @@ class FilterEngine:
         "DTS": re.compile(r"\bdts[-]?(hd|ma|x)?\b", re.IGNORECASE),
         "TRUEHD": re.compile(r"\btruehd\b|atmos", re.IGNORECASE),
         "OPUS": re.compile(r"\bopus\b", re.IGNORECASE),
+        "DSD": re.compile(r"\b(dsd\d*|sacd|dsf|dff)\b", re.IGNORECASE),
     }
 
     SOURCE_PATTERNS = {

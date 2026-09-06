@@ -48,25 +48,55 @@ def list_sources():
         status = "✓" if s in SCRAPER_CLASSES else "✗ (not implemented)"
         print(f"  {s:25} {status}")
 
-async def search_single(source_name: str, query: str, **kwargs):
-    """Search one source, return ScraperResult."""
+def _rutracker_module():
+    """Lazy import so a missing curl_cffi never breaks the rest of the CLI."""
+    try:
+        from .scrapers import rutracker as rt
+        return rt
+    except Exception:
+        return None
+
+def print_rutracker_forums():
+    """List presets and forum ids with descriptive names (--rt-list-forums)."""
+    rt = _rutracker_module()
+    if rt is None:
+        print("rutracker scraper unavailable (is curl_cffi installed?).", file=sys.stderr)
+        sys.exit(1)
+    print("RuTracker category presets — use --rt-cat KEY (with -s rutracker):")
+    for key in sorted(rt.FORUM_PRESETS):
+        preset = rt.FORUM_PRESETS[key]
+        print(f"  {key:15} {preset['label']}  ({len(preset['forums'])} forums)")
+    print("\nRuTracker forums — use --rt-forum ID (repeatable, combinable with a query):")
+    for branch, forums in rt.FORUM_DIRECTORY:
+        print(f"\n  {branch}:")
+        for fid, name in forums:
+            print(f"    {fid:<6} {name}")
+
+async def search_single(source_name: str, query: str, timeout: float | None = None, **kwargs):
+    """Search one source, return ScraperResult.
+
+    The timeout is per source: one slow site cancels only itself instead
+    of taking the whole gather (and every already-finished source) down.
+    """
     cls = SCRAPER_CLASSES.get(source_name)
     if cls is None:
         from .base import ScraperResult
         return ScraperResult(source=Source(source_name), error="Scraper not implemented", success=False)
     try:
         scraper = cls()
-        results = await scraper.search(query, **kwargs)
-        await scraper.close()
+        try:
+            results = await asyncio.wait_for(scraper.search(query, **kwargs), timeout=timeout)
+        finally:
+            await scraper.close()
         from .base import ScraperResult
         return ScraperResult(source=scraper.source, results=results)
     except Exception as e:
         from .base import ScraperResult
         return ScraperResult(source=Source(source_name), error=str(e), success=False)
 
-async def search_all(query: str, sources: list[str], **kwargs):
+async def search_all(query: str, sources: list[str], timeout: float | None = None, **kwargs):
     """Search multiple sources in parallel."""
-    tasks = [search_single(s, query, **kwargs) for s in sources]
+    tasks = [search_single(s, query, timeout=timeout, **kwargs) for s in sources]
     return await asyncio.gather(*tasks)
 
 def format_table(results: list[SearchResult]):
@@ -179,7 +209,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sources", "-s", help="Comma-separated source names (default: all)")
     parser.add_argument("--min-seeders", type=int, default=0, help="Minimum seeders")
     parser.add_argument("--quality", "-q", action="append", default=[], help="Quality: 2160p/4k/uhd, 1080p/fhd, 720p, 480p; Exclude specific quality for ex. 480p, by using Single quotes and ! prefix like '!480p'")
-    parser.add_argument("--codec", action="append", default=[], help="Codec: FLAC, AAC, DTS, etc.; '!value' (quoted) excludes")
+    parser.add_argument("--codec", action="append", default=[], help="Codec: FLAC, DSD (matches DSD/SACD/DSF/DFF), AAC, DTS, etc.; '!value' (quoted) excludes")
     parser.add_argument("--source-type", action="append", default=[], dest="source_types", help="Source type: REMUX, WEB-DL, BLURAY, etc.; '!value' (quoted) excludes")
     parser.add_argument("--hdr", action="append", default=[], help="HDR: HDR, DOLBY_VISION, HDR10+; '!value' (quoted) excludes")
     parser.add_argument("--min-size", type=float, default=0.0, help="Minimum size in GB")
@@ -189,6 +219,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", type=int, default=50, help="Results per page (page size)")
     parser.add_argument("--page", type=int, default=1, help="Result page to display (2 = next --limit results)")
     parser.add_argument("--sort", choices=["seeders", "size"], default="seeders", help="Sort results by")
+    rt = _rutracker_module()
+    rt_choices = sorted(rt.FORUM_PRESETS) if rt else ["dsd", "digitizations", "hires"]
+    if rt:
+        rt_cat_help = ("RuTracker only (use with -s rutracker): scope the search server-side to a named "
+                       "preset — " + "; ".join(f"{k} = {rt.FORUM_PRESETS[k]['label']}" for k in rt_choices)
+                       + ". Usable alone (no query) to browse latest posts")
+    else:
+        rt_cat_help = "RuTracker only: scope the search server-side (hires / digitizations / dsd)"
+    parser.add_argument("--rt-cat", dest="rt_cat", choices=rt_choices, metavar="PRESET", help=rt_cat_help)
+    parser.add_argument("--rt-forum", dest="rt_forum", action="append", type=int, metavar="ID",
+                        help="RuTracker only: forum id, repeatable (e.g. --rt-forum 1755 --rt-forum 1757). "
+                             "Run --rt-list-forums to see ids with descriptive names")
+    parser.add_argument("--rt-pages", dest="rt_pages", type=int, default=1, metavar="N",
+                        help="RuTracker only: server pages to fetch, 50 rows each (max 10 = the server's "
+                             "500-row hard cap; 5s spacing protects the Cloudflare clearance). "
+                             "This is the paging mechanism in --rt mode — --page/--limit are ignored there")
+    parser.add_argument("--rt-list-forums", dest="rt_list_forums", action="store_true",
+                        help="List RuTracker presets and forum ids with descriptive names, then exit")
     parser.add_argument("--format", choices=["table", "json", "simple"], default="table", help="Output format")
     parser.add_argument("--timeout", type=int, default=30, help="Total search timeout in seconds")
     parser.add_argument("--no-progress", action="store_true", help="Disable progress bar")
@@ -205,6 +253,12 @@ def main():
 
     if args.page < 1:
         parser.error("--page must be >= 1")
+    if args.rt_pages < 1:
+        parser.error("--rt-pages must be >= 1")
+
+    if args.rt_list_forums:
+        print_rutracker_forums()
+        return
 
     if args.list_sources:
         print("Available sources:")
@@ -242,7 +296,7 @@ def main():
         print_download_summary(report, args.client)
         return
 
-    if not args.query:
+    if not args.query and not (args.rt_cat or args.rt_forum):
         parser.print_help()
         return
 
@@ -256,6 +310,19 @@ def main():
     if not sources:
         print("No available sources to search.", file=sys.stderr)
         return
+
+    # RuTracker scoping kwargs — flow to scraper.search(**kwargs); other
+    # scrapers ignore them. In rt mode --rt-pages is the paging mechanism,
+    # so the client-side --page/--limit slice is skipped entirely.
+    rt_kwargs: dict[str, Any] = {}
+    if args.rt_cat:
+        rt_kwargs["category"] = args.rt_cat
+    if args.rt_forum:
+        rt_kwargs["forums"] = args.rt_forum
+    if args.rt_pages > 1:
+        rt_kwargs["pages"] = args.rt_pages
+    if rt_kwargs and "rutracker" not in sources:
+        print("Warning: --rt-* options only affect the rutracker source.", file=sys.stderr)
 
     # Build filter spec
     filter_engine = FilterEngine()
@@ -272,37 +339,44 @@ def main():
     )
 
     # Deep pages need more than the default per-source cap to have anything
-    # to slice on single-source searches.
-    if args.page > 1:
-        set_max_results_per_source(args.page * args.limit)
+    # to slice on single-source searches. 50 = rutracker rows per server page.
+    if args.page > 1 or args.rt_pages > 1:
+        set_max_results_per_source(max(args.page * args.limit, args.rt_pages * 50))
+
+    # Per-source timeout; rt deep paging needs room for its 5s page gaps.
+    timeout_s = max(args.timeout, args.rt_pages * 8)
 
     # Run search
     async def _run():
-        all_source_results = await asyncio.wait_for(
-            search_all(args.query, sources),
-            timeout=args.timeout,
-        )
+        all_source_results = await search_all(args.query or "", sources, timeout=timeout_s, **rt_kwargs)
         # Collect results
         results: list[SearchResult] = []
         for sr in all_source_results:
             if sr.success and sr.results:
                 results.extend(sr.results)
-        
+            elif not sr.success:
+                print(f"  {sr.source.value}: search failed — {sr.error}", file=sys.stderr)
+
         # Apply filters
         results = filter_engine.apply(results, filter_spec)
-        
+
         # Sort
         if args.sort == "seeders":
             results = filter_engine.sort_by_seeders(results, reverse=True)
         elif args.sort == "size":
             results.sort(key=lambda r: r.size_bytes, reverse=True)
-        
-        # Limit (page-aware slice)
-        start = (args.page - 1) * args.limit
-        results = results[start:start + args.limit]
+
+        # Limit (page-aware slice) — skipped in rt mode, where --rt-pages
+        # already paged server-side and all fetched rows are the result.
+        if not rt_kwargs:
+            start = (args.page - 1) * args.limit
+            if start >= len(results):
+                print(f"Page {args.page} starts past the {len(results)} collected results — nothing to show.",
+                      file=sys.stderr)
+            results = results[start:start + args.limit]
 
         # Save as the downloadable index, then display or download
-        save_results(args.query, results)
+        save_results(args.query or (args.rt_cat or "rutracker browse"), results)
         if args.download:
             try:
                 indices = parse_index_spec(args.download, len(results))
@@ -321,8 +395,6 @@ def main():
 
     try:
         asyncio.run(_run())
-    except asyncio.TimeoutError:
-        print("Search timed out. Try increasing --timeout or reducing --sources.", file=sys.stderr)
     except KeyboardInterrupt:
         print("\nSearch cancelled.", file=sys.stderr)
 

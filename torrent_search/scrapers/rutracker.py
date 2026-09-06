@@ -9,6 +9,7 @@ The session lives as long as the Firefox login does — if searches come
 back empty, re-login on rutracker.org in Firefox.
 """
 
+import asyncio
 import glob
 import os
 import re
@@ -65,7 +66,6 @@ CATEGORY_IDS = {
     "films": 2090,
     "movies": 2090,
     "series": 1930,
-    "music": 100,
     "games": 900,
     "software": 1100,
     "apps": 1100,
@@ -74,6 +74,79 @@ CATEGORY_IDS = {
     "sport": 3300,
 }
 SORT_MAP = {"name": 1, "seeders": 2, "size": 3, "leechers": 4}
+
+# Server paging constants: tracker.php serves PAGE_SIZE rows per page;
+# deeper pages ride a per-query search_id token (start=N*50). The server
+# hard-caps every query at 500 rows, so MAX_PAGES=10 is exhaustive.
+PAGE_SIZE = 50
+PAGE_DELAY = 5.0   # seconds between page fetches — bursts burn the CF clearance
+MAX_PAGES = 10
+
+# Named forum presets (server-side scope narrowing via repeated f= params).
+# Preset keys are what the user types; labels are what humans read.
+FORUM_PRESETS: dict[str, dict] = {
+    "hires": {
+        "label": "Hi-Res (lossless stereo/multichannel music)",
+        "forums": [1163, 1164, 1396, 1397, 1755, 1757, 1884, 1885,
+                   1890, 1893, 2302, 2303, 2345, 2346, 2512, 2513],
+    },
+    "digitizations": {
+        "label": "Digitization (rips of analog media)",
+        "forums": [123, 239, 450, 506, 974, 1217, 1444, 1625,
+                   1660, 1754, 1756, 1758, 1766, 1835, 2301, 2401],
+    },
+}
+FORUM_PRESETS["dsd"] = {
+    "label": "DSD everywhere (Hi-Res + Digitization)",
+    "forums": sorted(set(FORUM_PRESETS["hires"]["forums"])
+                     | set(FORUM_PRESETS["digitizations"]["forums"])),
+}
+
+# Full directory of selectable forums with descriptive names, grouped by
+# branch (verified via viewforum pages; service forums excluded). Drives
+# --rt-list-forums so raw ids never have to be memorized.
+FORUM_DIRECTORY: list[tuple[str, list[tuple[int, str]]]] = [
+    ("Hi-Res — branch 1299 (Hi-Res stereo и многоканальная музыка)", [
+        (1163, "Dolby Atmos"),
+        (1164, "Classical vocal / Crossover"),
+        (1396, "Alt / Punk / Indie"),
+        (1397, "Soundtracks"),
+        (1755, "Rock"),
+        (1757, "Prog / Art Rock"),
+        (1884, "Classical instrumental"),
+        (1885, "Pop"),
+        (1890, "Metal"),
+        (1893, "Electronic"),
+        (2302, "Jazz (Cool / Fusion / Avant-Garde)"),
+        (2303, "Vocal Jazz / Funk / Soul / R&B"),
+        (2345, "Blues"),
+        (2346, "Bop"),
+        (2512, "Other genres"),
+        (2513, "New Age / Relax / Flamenco"),
+    ]),
+    ("Digitization — branch 2219 (Оцифровки с аналоговых носителей)", [
+        (123, "Alt / Punk / Indie"),
+        (239, "Russian pop"),
+        (450, "Instrumental pop"),
+        (506, "Folk / ethno"),
+        (974, "Other genres"),
+        (1217, "Chanson / military"),
+        (1444, "Foreign pop"),
+        (1625, "Soundtracks / musicals"),
+        (1660, "Classical"),
+        (1754, "Electronic"),
+        (1756, "Foreign rock"),
+        (1758, "Russian rock"),
+        (1766, "Metal"),
+        (1835, "Rap / Hip-Hop / Reggae / Ska / Dub"),
+        (2301, "Jazz / blues"),
+        (2401, "Soviet estrada / retro"),
+    ]),
+]
+
+FORUM_NAMES: dict[int, str] = {
+    fid: name for _, forums in FORUM_DIRECTORY for fid, name in forums
+}
 
 # Must match the browser the cookies were issued to (Firefox 153 ESR on
 # this machine) — cf_clearance is bound to the User-Agent.
@@ -128,6 +201,12 @@ def _decode(resp) -> str:
 def _digits(text: str) -> int:
     digits = "".join(ch for ch in text if ch.isdigit())
     return int(digits) if digits else 0
+
+
+def _torrent_id(page_url: str) -> str:
+    """Stable dedupe key for a row: the topic id (t=...) in its URL."""
+    m = re.search(r"[?&]t=(\d+)", page_url or "")
+    return m.group(1) if m else (page_url or "")
 
 
 def _has_login_form(html: str) -> bool:
@@ -206,19 +285,37 @@ class RuTrackerScraper(BaseScraper):
         return self._logged_in
 
     def _build_url(self, query: str, **kwargs) -> str:
-        params = {"nm": query}
+        """Build a tracker.php URL.
+
+        Params are kept as a list of tuples so repeated f= entries
+        urlencode into forum filters (rutracker ANDs them). An empty
+        query yields browse mode (f= only, no nm=).
+        """
+        params: list[tuple[str, str]] = []
+        if query and query.strip():
+            params.append(("nm", query))
+
+        forums: list[int] = list(kwargs.get("forums") or [])
         category = kwargs.get("category")
         if category:
-            cid = CATEGORY_IDS.get(str(category).lower(), category if str(category).isdigit() else None)
-            if cid:
-                params["f"] = str(cid)
+            preset = FORUM_PRESETS.get(str(category).lower())
+            if preset:
+                forums.extend(preset["forums"])
+            else:
+                cid = CATEGORY_IDS.get(str(category).lower(),
+                                       category if str(category).isdigit() else None)
+                if cid:
+                    forums.append(int(cid))
+        for fid in forums:
+            params.append(("f", str(fid)))
+
         sort = kwargs.get("sort")
         if sort:
             parts = str(sort).split(":")
             field = SORT_MAP.get(parts[0].lower())
             if field:
-                params["s"] = str(field)
-                params["o"] = "1" if len(parts) > 1 and parts[1].lower() == "asc" else "2"
+                params.append(("s", str(field)))
+                params.append(("o", "1" if len(parts) > 1 and parts[1].lower() == "asc" else "2"))
         return f"{SEARCH_URL}?{urlencode(params)}"
 
     def _parse_results(self, html: str, base_url: str | None = None) -> list[SearchResult]:
@@ -275,14 +372,44 @@ class RuTrackerScraper(BaseScraper):
         if not await self._login():
             return []
         client = await self._get_client()
+        pages = max(1, min(int(kwargs.get("pages") or 1), MAX_PAGES))
+        merged: list[SearchResult] = []
+        seen: set[str] = set()
         try:
             resp = await client.get(self._build_url(query, **kwargs))
             if resp.status_code in (403, 429, 503):
                 return []
             resp.raise_for_status()
-            return self._parse_results(_decode(resp), str(resp.url))
+            html = _decode(resp)
+            for r in self._parse_results(html, str(resp.url)):
+                key = _torrent_id(r.page_url)
+                if key not in seen:
+                    seen.add(key)
+                    merged.append(r)
+
+            # Deep paging: tracker.php?search_id=<token>&start=N*50. The
+            # token comes from the first response's own pagination links.
+            token = re.search(r"search_id=([\w-]{6,})", html)
+            for n in range(1, pages):
+                if token is None or len(merged) < n * PAGE_SIZE:
+                    break  # no token (single page) or previous page was short
+                await asyncio.sleep(PAGE_DELAY)
+                resp = await client.get(
+                    f"{SEARCH_URL}?search_id={token.group(1)}&start={n * PAGE_SIZE}"
+                )
+                if resp.status_code in (403, 429, 503):
+                    break  # keep whatever was collected
+                resp.raise_for_status()
+                new = [r for r in self._parse_results(_decode(resp), str(resp.url))
+                       if _torrent_id(r.page_url) not in seen]
+                if not new:
+                    break
+                for r in new:
+                    seen.add(_torrent_id(r.page_url))
+                merged.extend(new)
+            return merged
         except Exception:
-            return []
+            return merged
 
     async def alive(self) -> bool:
         try:

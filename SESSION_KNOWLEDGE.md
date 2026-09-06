@@ -175,9 +175,21 @@ Registration touch points per new source: `base.py` Source enum, `config.py` SIT
 
 ## RuTracker status (WORKING — Firefox cookie bridge, 2026-09-06)
 
-- **Bypass design**: harvest `cf_clearance` + `bb_session` cookies from the local Firefox profile (`~/.mozilla/firefox/*/cookies.sqlite`, copied to temp to dodge locks) and replay them through `curl_cffi` `AsyncSession(impersonate="firefox135")` with UA `…Firefox/153.0` (must match the cookie-issuing browser). `_harvest_firefox_cookies()` in rutracker.py; login = cookies present, no probe request.
+### Required user actions for rutracker to work
+
+1. **Be logged into rutracker.org in the local Firefox** (free account; one-time). The CLI harvests `bb_session` + `cf_clearance` (+bb_guid/bb_ssl) from `~/.mozilla/firefox/*/cookies.sqlite` before every run — the `RUTRACKER_*` entries in `.env` are NOT used for login (the legacy form-login path in rutracker.py is kept but unusable while CF guards login.php).
+2. **Pass the Cloudflare check IN FIREFOX**: open `https://rutracker.org/forum/tracker.php?nm=test` in Firefox. If the "Verify you are human" checkbox appears, **click it** and wait for the results page to load. Only a checkbox-click-solved clearance is replayable by the CLI; a page that loads by itself (invisible auto-rotate) does NOT mint a replayable clearance.
+3. **Then use the CLI normally**: `torrent_search_dl "dune" -s rutracker`.
+4. **When rutracker returns empty again** → repeat action 2 (open the tracker URL in Firefox, click the box if it appears, wait for results) and re-run the search.
+5. **Keep volume light**: 1 request per search, +1 per `--download`ed rutracker result (its `.torrent` fetch). Bursts re-trigger the challenge and burn the replayed clearance.
+6. **After a Firefox upgrade**: bump `FIREFOX_UA` in `torrent_search/scrapers/rutracker.py` to the new version — `cf_clearance` is bound to the User-Agent string.
+
+### How the bypass works
+
+- Harvest: `_harvest_firefox_cookies()` copies each `~/.mozilla/firefox/*/cookies.sqlite` (+wal/shm) to a temp dir (live DBs are locked) and reads `moz_cookies WHERE host LIKE '%rutracker.org'`. All four cookies are never-expiring.
+- Replay: `curl_cffi` `AsyncSession(impersonate="firefox135")` with UA `…Firefox/153.0` (must match the cookie-issuing browser). `_login()` = both cookies present → logged_in, zero probe requests; the search itself is the probe.
 - **Critical: request volume burns the clearance.** A 50-fetch burst (magnet conversion for all results at search time) made CF re-challenge the replay client; invisible auto-rotated clearances do NOT replay. A **checkbox-solved** clearance (user clicks verification manually in Firefox) replays fine. Search is now exactly 1 request (`tracker.php`); magnets are fetched only per downloaded torrent.
-- **If searches come back empty**: open `https://rutracker.org/forum/tracker.php?nm=<anything>` in Firefox — if a verification box appears, click it — then re-run. That mints a replayable clearance. (Forum index is NOT CF-guarded; only login.php/tracker.php/dl.php are.)
+- Forum index is NOT CF-guarded; only login.php/tracker.php/dl.php are.
 - Parser: 10-td rows — td2 category, td3 title (`a.tLink`), td4 uploader, td5 `td.tor-size` (`data-ts_text` = exact bytes; contains `a.tr-dl` → `dl.php?t=<id>` .torrent link), td6 seeders, td7 leechers, td9 added. windows-1251. `fetch_torrent_magnet()` (module-level) fetches dl.php through a fresh cookie session; `download.ensure_magnet` routes `rutracker.org` URLs to it (plain httpx can't reach dl.php).
 - Dead ends proven: httpx/curl_cffi direct (403), playwright+patchright chromium any mode, patchright firefox headless+headed (challenge starts, never completes), turnstile-iframe click (widget iframe never renders under automation), real Firefox binary headless via Marionette (`navigator.webdriver` → challenge stalls 46s+; fresh-clearance replay blocked). Brave in general: farbling breaks Turnstile (per-site Shields → Block fingerprinting OFF fixes the browser itself).
 - Latent bug fixed en route: old code called `self._decode(...)` (module function, not method) — AttributeError swallowed by bare except → always `[]` even without CF.
@@ -193,4 +205,15 @@ Registration touch points per new source: `base.py` Source enum, `config.py` SIT
 - `--page N` (default 1) slices the merged → filtered → sorted list: rows `[(N-1)*limit : N*limit]`, with `--limit` as page size. Uniform across all 19 sources; the saved index (`last_results.json`) and `--download` numbering always match the displayed page.
 - Deep pages (`--page > 1`) raise the per-source fetch cap via `config.set_max_results_per_source(page × limit)` — scrapers bind the constant at import time, so the helper patches each imported scraper module's global.
 - Bound: per-source depth is limited to what the site's first results page serves (knaben ~50 rows → page 11 empty; TorLock pages carry more). Multi-source pools stack, so aggregate pages go deeper.
-- Option B — true server-side per-site page params (1337x path page, YTS API `page`, rutracker `start`, yggtorrent `page`; knaben/torlock/yourbittorrent likely but unverified; TPB apibay and EZTVx RSS can't) — **deferred for later** per user (2026-09-06).
+- Option B — true server-side per-site page params (1337x path page, YTS API `page`, yggtorrent `page`; knaben/torlock/yourbittorrent likely but unverified; TPB apibay and EZTVx RSS can't) — **deferred for later** per user (2026-09-06).
+- **rutracker Option B DONE** (2026-09-06, live-verified): see "RuTracker scope narrowing + deep paging" below.
+
+## RuTracker scope narrowing + deep paging (added 2026-09-06, implemented + live-verified)
+
+- Flags: `--rt-cat {hires,digitizations,dsd}` (named presets, server-side `f=` narrowing), `--rt-forum ID` (repeatable raw ids), `--rt-pages N` (1..10 server pages of 50, 5s spacing), `--rt-list-forums` (prints presets + full id→name directory, from `FORUM_DIRECTORY` in rutracker.py). All rutracker-only; harmless warning if `-s rutracker` absent. Empty query + rt flag = browse mode (f=-only, no nm=).
+- Server mechanics (verified live): repeated `f=` ANDs forums; deep pages ride `search_id=<token>` from the first response (`start=N*50`, token stable); hard cap 500 rows/query for both search and browse; 16-forum browse URL + browse-mode token pagination both confirmed working (390 results / 100 rows fetched in test).
+- `FORUM_PRESETS` = {hires: 16 leaves of branch 1299, digitizations: 16 leaves of branch 2219, dsd: union of 32}; ids/names in `FORUM_DIRECTORY`. `CATEGORY_IDS['music']=100` removed (was wrong). Results carry the forum name in the category column (td2), so scoped searches self-identify.
+- In rt mode the CLI skips the `--page/--limit` slice entirely (`--rt-pages` is the paging; all fetched rows display + save). Cap raise now `max(page*limit, rt_pages*50)`. Timeout `max(args.timeout, rt_pages*8)`.
+- Codec filter: `--codec dsd` (also DSD128-style compact forms) = `\b(dsd\d*|sacd|dsf|dff)\b` in `CODEC_PATTERNS` (filters.py).
+- CLI hygiene fixes shipped with it: per-source timeout inside `search_single` (replaces the old single global `wait_for` that let one dead source discard every finished source's results — was the main "broad query shows ZERO" cause); failed sources now print `source: search failed — error` to stderr; `--page` starting past the data end warns instead of silently showing an empty table.
+- Gotcha fixed during testing: argparse `query` is `None` (not `""`) in browse mode — `_build_url` now guards `if query and query.strip()`, and cli passes `args.query or ""`. Symptom was silent-empty browse searches.
