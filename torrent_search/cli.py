@@ -26,6 +26,9 @@ _scraper_modules = {
     "katcr": ("katcr", "KatCRScraper"),
     "torrentparadise": ("torrentparadise", "TorrentParadiseScraper"),
     "torrenting": ("torrenting", "TorrentingScraper"),
+    "yourbittorrent": ("yourbittorrent", "YourBittorrentScraper"),
+    "audiobookbay": ("audiobookbay", "AudioBookBayScraper"),
+    "knaben": ("knaben", "KnabenScraper"),
 }
 
 for name, (module_name, class_name) in _scraper_modules.items():
@@ -223,7 +226,7 @@ def main():
             sys.exit(1)
         picked = [saved[i - 1] for i in indices]
         try:
-            report = download_results(picked, args.client)
+            report = asyncio.run(download_results(picked, args.client))
         except FileNotFoundError as e:
             print(e, file=sys.stderr)
             sys.exit(1)
@@ -293,7 +296,7 @@ def main():
                 sys.exit(1)
             picked = [results[i - 1] for i in indices]
             try:
-                report = download_results(picked, args.client)
+                report = await download_results(picked, args.client)
             except FileNotFoundError as e:
                 print(e, file=sys.stderr)
                 sys.exit(1)

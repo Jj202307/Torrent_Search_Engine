@@ -1,5 +1,7 @@
 """TorLock.com torrent scraper (HTML)."""
 
+import re
+
 import httpx
 from bs4 import BeautifulSoup
 from ..base import BaseScraper, SearchResult, Source
@@ -19,6 +21,16 @@ CATEGORY_SUFFIX = {
     "images": "images",
     "adult": "adult",
 }
+
+# Real result rows link to /torrent/<id>/<slug>.html detail pages; the direct
+# .torrent file is served from TorLock's download mirror as /tor/<id>.torrent.
+_TORRENT_ID_RE = re.compile(r"/torrent/(\d+)/")
+DOWNLOAD_URL = "https://lt.t0r.space/tor/{id}.torrent"
+
+
+def _cell_text(row, cls: str) -> str:
+    td = row.select_one(f"td.{cls}")
+    return td.get_text(" ", strip=True) if td else ""
 
 
 class TorLockScraper(BaseScraper):
@@ -55,36 +67,30 @@ class TorLockScraper(BaseScraper):
             return []
 
         results = []
-        for table in soup.find_all("table"):
-            for row in table.find_all("tr"):
-                cells = row.find_all("td")
-                if len(cells) < 5:
-                    continue
-                link = next(
-                    (a for a in row.find_all("a", href=True) if a.get_text(strip=True)),
-                    None,
-                )
-                if link is None:
-                    continue
-                href = link.get("href", "")
-                title = link.get_text(strip=True)
+        for row in soup.find_all("tr"):
+            # Only real result rows carry a title link with class "tl-name".
+            # Ad-banner rows and injected mirror-spam rows (t0r.space links
+            # with "Full Version" / "High-Definition" titles that 404) don't,
+            # so they are dropped here.
+            link = row.select_one("a.tl-name[href]")
+            if link is None:
+                continue
+            href = link.get("href", "")
+            id_match = _TORRENT_ID_RE.search(href)
+            if id_match is None:
+                continue
 
-                size_text = cells[3].get_text(" ", strip=True) if len(cells) > 3 else ""
-                seeds_text = cells[4].get_text(strip=True) if len(cells) > 4 else ""
-                peers_text = cells[5].get_text(strip=True) if len(cells) > 5 else ""
-
-                results.append(SearchResult(
-                    title=title,
-                    source=Source.TORLOCK,
-                    category=kwargs.get("category", ""),
-                    size_bytes=parse_size(size_text),
-                    seeders=to_int(seeds_text),
-                    leechers=to_int(peers_text),
-                    torrent_url=f"{SITE_URLS['torlock']}{href}" if href.startswith("/") else href,
-                    page_url=f"{SITE_URLS['torlock']}{href}" if href.startswith("/") else href,
-                ))
-                if len(results) >= MAX_RESULTS_PER_SOURCE:
-                    break
+            page_url = href if href.startswith("http") else f"{SITE_URLS['torlock']}{href}"
+            results.append(SearchResult(
+                title=link.get_text(" ", strip=True),
+                source=Source.TORLOCK,
+                category=kwargs.get("category", ""),
+                size_bytes=parse_size(_cell_text(row, "ts")),
+                seeders=to_int(_cell_text(row, "tul")),
+                leechers=to_int(_cell_text(row, "tdl")),
+                torrent_url=DOWNLOAD_URL.format(id=id_match.group(1)),
+                page_url=page_url,
+            ))
             if len(results) >= MAX_RESULTS_PER_SOURCE:
                 break
 

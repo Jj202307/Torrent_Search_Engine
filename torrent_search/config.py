@@ -38,6 +38,10 @@ RATE_LIMITS: dict[str, float] = {
     "katcr": 1.5,
     "torrentparadise": 1.0,
     "torrenting": 1.0,
+    "yourbittorrent": 1.0,
+    "audiobookbay": 1.0,
+    "knaben": 1.0,
+    "snowfl": 1.0,
 }
 
 # Credentials from environment (for login-required sites)
@@ -91,4 +95,8 @@ SITE_URLS = {
     "katcr": "https://katcr.co",
     "torrentparadise": "https://torrentparadise.org",
     "torrenting": "https://torrenting.com",
+    "yourbittorrent": "https://yourbittorrent.com",
+    "audiobookbay": "https://audiobookbay.lu",
+    "knaben": "https://knaben.org",
+    "snowfl": "https://snowfl.com",
 }

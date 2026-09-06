@@ -16,6 +16,9 @@ from .zamunda import ZamundaScraper
 from .maxitorrent import MaxitorrentScraper
 from .bitru import BitRuScraper
 from .gimmepeers import GimmePeersScraper
+from .yourbittorrent import YourBittorrentScraper
+from .audiobookbay import AudioBookBayScraper
+from .knaben import KnabenScraper
 
 __all__ = [
     "TPBScraper",
@@ -34,4 +37,7 @@ __all__ = [
     "MaxitorrentScraper",
     "BitRuScraper",
     "GimmePeersScraper",
+    "YourBittorrentScraper",
+    "AudioBookBayScraper",
+    "KnabenScraper",
 ]

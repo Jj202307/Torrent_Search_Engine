@@ -22,6 +22,10 @@ class Source(str, Enum):
     KATCR = "katcr"
     TORRENTPARADISE = "torrentparadise"
     TORRENTING = "torrenting"
+    YOURBITTORRENT = "yourbittorrent"
+    AUDIOBOOKBAY = "audiobookbay"
+    KNABEN = "knaben"
+    SNOWFL = "snowfl"
 
 @dataclass
 class SearchResult:
