@@ -203,9 +203,9 @@ rutracker flags (server-side scoping; use with -s rutracker):
               digitizations  rips of analog media (16 forums)
               dsd            DSD everywhere = hi-res + digitizations (32 forums)
               movies         foreign & Russian cinema, DVD/HD/UHD, cartoons,
-                             anime, theater, 3D (30 forums)
-              tv-series      Russian, foreign, Latin American/Turkish/Indian,
-                             Asian series (40 forums)
+                             anime, theater, 3D (106 forums)
+              tv-series      Russian, foreign SD/HD/UHD incl. US & Canada,
+                             LatAm/Turkey/India, Asian (78 forums)
   -F ID       restrict to specific forum ids, repeatable (e.g. -F 1755 -F 1757;
               see -L for ids with descriptive names). Usable alone (no query)
               to browse a forum's latest posts
