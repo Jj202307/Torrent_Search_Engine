@@ -157,9 +157,9 @@ def print_hints(show: bool = True):
         return
     print()
     print("----------------------------------------------------------")
-    print("Download these:  torrent-search --download 1,3,4")
-    print("Re-list saved:   torrent-search --show")
-    print("All options:     torrent-search --help")
+    print("Download these:  torrent_search_dl --download 1,3,4")
+    print("Re-list saved:   torrent_search_dl --show")
+    print("All options:     torrent_search_dl --help")
     print("----------------------------------------------------------")
 
 def display_results(results: list[SearchResult], fmt: str = "table", hints: bool = True):
@@ -220,42 +220,42 @@ rutracker flags (server-side scoping; use with -s rutracker):
 
 examples:
   # search movies branches for 'dune', two server pages (up to 100 rows)
-  torrent-search 'dune' -s rutracker -C movies -P 2
+  torrent_search_dl 'dune' -s rutracker -C movies -P 2
 
   # TV series: 'severance' across all series branches, seeders filter
-  torrent-search 'severance' -s rutracker -C tv-series --min-seeders 3
+  torrent_search_dl 'severance' -s rutracker -C tv-series --min-seeders 3
 
   # new 4K movies: query + quality filter narrows the movies scope
-  torrent-search '2026' -s rutracker -C movies -q 2160p
+  torrent_search_dl '2026' -s rutracker -C movies -q 2160p
 
   # browse newest posts in the Hi-Res music preset (3 pages of 50)
-  torrent-search -s rutracker -C hi-res -P 3
+  torrent_search_dl -s rutracker -C hi-res -P 3
 
   # DSD material everywhere, then keep only DSD/SACD/DSF/DFF titles
-  torrent-search 'DSD' -s rutracker -C dsd --codec dsd
+  torrent_search_dl 'DSD' -s rutracker -C dsd --codec dsd
 
   # two specific music forums by id, deep-paged
-  torrent-search 'flac' -s rutracker -F 1755 -F 1756 -P 2
+  torrent_search_dl 'flac' -s rutracker -F 1755 -F 1756 -P 2
 
   # browse a single forum with no query (pattern: any id from -L; -P N = N x 50)
-  torrent-search -s rutracker -F 1457 -P 2
+  torrent_search_dl -s rutracker -F 1457 -P 2
 
   # movies in UHD (4K) and HD, browsed
-  torrent-search -s rutracker -F 1457 -F 271        # foreign + art-house UHD
-  torrent-search -s rutracker -F 313 -F 312         # foreign + Russian HD
+  torrent_search_dl -s rutracker -F 1457 -F 271        # foreign + art-house UHD
+  torrent_search_dl -s rutracker -F 313 -F 312         # foreign + Russian HD
 
   # keep up with new releases: 2026 films + 2021-2025 + airing shows
-  torrent-search -s rutracker -F 252 -F 1950 -F 1803 -P 2
+  torrent_search_dl -s rutracker -F 252 -F 1950 -F 1803 -P 2
 
   # hi-res / digitized music by genre
-  torrent-search -s rutracker -F 1163 -P 2          # Dolby Atmos
-  torrent-search -s rutracker -F 1756               # digitized foreign rock
+  torrent_search_dl -s rutracker -F 1163 -P 2          # Dolby Atmos
+  torrent_search_dl -s rutracker -F 1756               # digitized foreign rock
 """
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="torrent-search",
+        prog="torrent_search_dl",
         description=(
             "Multi-source torrent search with filtering. Exclusion with single "
             "quotes and ! prefix (ex. '!480p') works the same for --quality, "

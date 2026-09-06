@@ -31,7 +31,7 @@ def load_results() -> tuple[str, list[SearchResult]]:
     if not STATE_FILE.exists():
         raise FileNotFoundError(
             f"No saved results at {STATE_FILE}. Run a search first, "
-            "e.g. `torrent-search 'your query'`."
+            "e.g. `torrent_search_dl 'your query'`."
         )
     payload = json.loads(STATE_FILE.read_text())
     results = []
