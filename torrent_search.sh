@@ -64,14 +64,10 @@ run_python() {
   PYTHONPATH="${SCRIPT_DIR}${PYTHONPATH:+:${PYTHONPATH}}" exec "$py" -m torrent_search.cli "$@"
 }
 
-case "${1:-}" in
-  --install-aliases)
-    install_aliases
-    ;;
-  "")
-    onboarding
-    ;;
-  *)
-    run_python "$@"
-    ;;
-esac
+if [[ $# -eq 0 ]]; then
+  onboarding
+elif [[ "$1" == "--install-aliases" ]]; then
+  install_aliases
+else
+  run_python "$@"
+fi

@@ -247,6 +247,11 @@ examples:
   # keep up with new releases: 2026 films + 2021-2025 + airing shows
   torrent_search_dl -s rutracker -F 252 -F 1950 -F 1803 -P 2
 
+  # newest movies via the YTS API — empty query = browse latest uploads
+  # (only yts supports no-query browse; -q filters client-side afterwards)
+  torrent_search_dl '' -s yts
+  torrent_search_dl '' -s yts -q 1080p --limit 50
+
   # hi-res / digitized music by genre
   torrent_search_dl -s rutracker -F 1163 -P 2          # Dolby Atmos
   torrent_search_dl -s rutracker -F 1756               # digitized foreign rock
@@ -392,8 +397,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-size", type=float, default=float("inf"), help="Maximum size in GB")
     parser.add_argument("--must-contain", action="append", default=[], help="Keyword that must be in title")
     parser.add_argument("--must-not-contain", action="append", default=[], help="Keyword that must NOT be in title")
-    parser.add_argument("--limit", type=int, default=50, help="Results per page (page size)")
+    parser.add_argument("--limit", type=int, default=50, help="Results per page (page size; also the per-source fetch window)")
     parser.add_argument("--page", type=int, default=1, help="Result page to display (2 = next --limit results)")
+    parser.add_argument("--yts-sort", dest="yts_sort",
+                        choices=["date_added", "download_count", "seeds", "peers", "rating", "year", "title"],
+                        default=None,
+                        help="YTS server-side sort (movies only): date_added (newest, default), "
+                             "download_count/seeds/peers (most popular), rating, year, title")
     parser.add_argument("--sort", choices=["seeders", "size"], default="seeders", help="Sort results by")
     rt = _rutracker_module()
     rt_choices = sorted(rt.FORUM_PRESETS) if rt else ["digitizations", "dsd", "hi-res", "movies", "tv-series"]
@@ -473,11 +483,8 @@ def main():
         print_download_summary(report, args.client)
         return
 
-    if not args.query and not (args.rt_cat or args.rt_forum):
-        parser.print_help()
-        return
-
-    # Determine sources
+    # Determine sources (before the empty-query gate: browse mode is
+    # source-dependent)
     if args.sources:
         sources = [s.strip() for s in args.sources.split(",")]
         sources = [s for s in sources if s in SCRAPER_CLASSES]
@@ -486,6 +493,16 @@ def main():
 
     if not sources:
         print("No available sources to search.", file=sys.stderr)
+        return
+
+    # An empty query is a no-query BROWSE. Allowed for rutracker with
+    # -C/-F scoping, or when every selected source supports browse (yts
+    # = newest uploads). Everything else still needs a search term.
+    browse_ok = bool(sources) and all(
+        getattr(SCRAPER_CLASSES[s], "supports_browse", False) for s in sources
+    )
+    if not args.query and not (args.rt_cat or args.rt_forum) and not browse_ok:
+        parser.print_help()
         return
 
     # RuTracker scoping kwargs — flow to scraper.search(**kwargs); other
@@ -500,6 +517,8 @@ def main():
         rt_kwargs["pages"] = args.rt_pages
     if rt_kwargs and "rutracker" not in sources:
         print("Warning: --rt-* options only affect the rutracker source.", file=sys.stderr)
+    if args.yts_sort and "yts" not in sources:
+        print("Warning: --yts-sort only affects the yts source.", file=sys.stderr)
 
     # Build filter spec
     filter_engine = FilterEngine()
@@ -517,15 +536,27 @@ def main():
 
     # Deep pages need more than the default per-source cap to have anything
     # to slice on single-source searches. 50 = rutracker rows per server page.
-    if args.page > 1 or args.rt_pages > 1:
-        set_max_results_per_source(max(args.page * args.limit, args.rt_pages * 50))
+    # The cap is always at least page*limit, so --limit also widens the
+    # per-source FETCH window (yts browse: more than ~25 movies per shot).
+    set_max_results_per_source(max(args.page * args.limit, args.rt_pages * 50))
 
     # Per-source timeout; rt deep paging needs room for its 5s page gaps.
     timeout_s = max(args.timeout, args.rt_pages * 8)
 
     # Run search
+    # --limit rides to the scrapers as the fetch window (yts uses it to
+    # browse deeper than its 20-movie API default; others ignore it).
+    # --page intentionally does NOT flow through — x1337 would treat it
+    # as a server-side page and double-apply paging. --yts-sort rides as
+    # sort_by (only yts reads it).
+    yts_kwargs: dict[str, Any] = {}
+    if args.yts_sort:
+        yts_kwargs["sort_by"] = args.yts_sort
+
     async def _run():
-        all_source_results = await search_all(args.query or "", sources, timeout=timeout_s, **rt_kwargs)
+        all_source_results = await search_all(
+            args.query or "", sources, timeout=timeout_s,
+            limit=args.limit, **yts_kwargs, **rt_kwargs)
         # Collect results
         results: list[SearchResult] = []
         for sr in all_source_results:
@@ -553,7 +584,10 @@ def main():
             results = results[start:start + args.limit]
 
         # Save as the downloadable index, then display or download
-        save_results(args.query or (args.rt_cat or "rutracker browse"), results)
+        search_label = args.query or args.rt_cat or (
+            "+".join(sources) + " browse" if browse_ok else "rutracker browse"
+        )
+        save_results(search_label, results)
         if args.download:
             try:
                 indices = parse_index_spec(args.download, len(results))

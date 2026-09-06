@@ -52,6 +52,10 @@ class ScraperResult:
 
 class BaseScraper(ABC):
     source: Source
+    # True when the scraper can list results with an EMPTY query (browse
+    # mode, e.g. yts newest uploads). rutracker browses too but only with
+    # -C/-F scoping, which the CLI checks separately — so it stays False.
+    supports_browse: bool = False
 
     @abstractmethod
     async def search(self, query: str, **kwargs) -> list[SearchResult]:

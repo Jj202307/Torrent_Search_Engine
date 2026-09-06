@@ -1,7 +1,9 @@
-"""EZTVx.to scraper. TV show torrents, RSS-first with HTML fallback."""
+"""EZTVx.to scraper. TV torrents; browse via beta API with RSS/HTML fallbacks."""
 
+import asyncio
 import re
 import xml.etree.ElementTree as ET
+from datetime import datetime
 
 import httpx
 from bs4 import BeautifulSoup
@@ -17,6 +19,7 @@ from ..normalizer import parse_size, to_int
 
 RSS_URL = f"{SITE_URLS['eztvx']}/ezrss.xml"
 SEARCH_URL = f"{SITE_URLS['eztvx']}/search/{{query}}"
+API_URL = f"{SITE_URLS['eztvx']}/api/get-torrents"
 
 _NS = {
     "torrent": "http://xmlns.ezrss.it/0.1/",
@@ -25,6 +28,11 @@ _NS = {
 
 class EZTVXScraper(BaseScraper):
     source = Source.EZTVX
+    # Empty query = browse: beta API first (widest window, populated seed
+    # counts), falls back to RSS then HTML.
+    supports_browse = True
+
+    LATEST_URL = f"{SITE_URLS['eztvx']}/releases/"
 
     def __init__(self):
         self._client: httpx.AsyncClient | None = None
@@ -135,8 +143,89 @@ class EZTVXScraper(BaseScraper):
                 continue
         return results
 
+    async def _browse_api(self, want: int) -> list[SearchResult]:
+        """Beta API browse (GET /api/get-torrents, limit 1-100, page 1-100).
+
+        Unlike the RSS feed (hard 30-item buffer) the API pages cleanly and
+        carries populated seeds/peers + imdb_id, so wider --limit windows and
+        client-side --sort seeders produce a real "popular right now" list.
+        """
+        client = await self._get_client()
+        results: list[SearchResult] = []
+        seen: set[str] = set()
+        page = 1
+        while len(results) < want and page <= 10:
+            try:
+                resp = await client.get(API_URL, params={"limit": 100, "page": page})
+                resp.raise_for_status()
+                payload = resp.json()
+            except Exception:
+                break
+            torrents = payload.get("torrents") or []
+            if not torrents:
+                break
+            for t in torrents:
+                if len(results) >= want:
+                    break
+                info_hash = (t.get("hash") or "").strip()
+                magnet = t.get("magnet_url") or (f"magnet:?xt=urn:btih:{info_hash}" if info_hash else "")
+                title = (t.get("filename") or "").strip()
+                if not title or not magnet:
+                    continue
+                if info_hash:
+                    if info_hash in seen:
+                        continue
+                    seen.add(info_hash)
+                added = ""
+                unix = t.get("date_released_unix")
+                if unix:
+                    try:
+                        added = datetime.fromtimestamp(int(unix)).strftime("%Y-%m-%d")
+                    except Exception:
+                        added = ""
+                results.append(SearchResult(
+                    title=title,
+                    source=self.source,
+                    category="tv",
+                    size_bytes=int(t.get("size_bytes") or 0),
+                    seeders=to_int(str(t.get("seeds") or 0)),
+                    leechers=to_int(str(t.get("peers") or 0)),
+                    magnet=magnet,
+                    torrent_url=t.get("torrent_url") or "",
+                    info_hash=info_hash,
+                    added=added,
+                ))
+            page += 1
+            await asyncio.sleep(1.0)  # politeness (site RATE_LIMITS entry is 1.5)
+        return results
+
     async def search(self, query: str, **kwargs) -> list[SearchResult]:
         client = await self._get_client()
+        if not query:
+            # Browse mode: beta API first (widest window, populated seed
+            # counts); RSS (30-item buffer) and HTML fall back in turn.
+            want = min(kwargs.get("limit", MAX_RESULTS_PER_SOURCE), MAX_RESULTS_PER_SOURCE)
+            try:
+                results = await self._browse_api(want)
+                if results:
+                    return results
+            except Exception:
+                pass
+            try:
+                resp = await client.get(RSS_URL)
+                resp.raise_for_status()
+                results = self._parse_rss(resp.text)
+                if results:
+                    return results
+            except Exception:
+                pass
+            try:
+                resp = await client.get(self.LATEST_URL)
+                resp.raise_for_status()
+                return self._parse_html(resp.text)
+            except Exception:
+                return []
+
         try:
             resp = await client.get(RSS_URL, params={"q": query, "imdb": "", "rss": "1"})
             resp.raise_for_status()
