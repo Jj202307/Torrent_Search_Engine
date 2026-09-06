@@ -180,11 +180,11 @@ Registration touch points per new source: `base.py` Source enum, `config.py` SIT
 - Turnstile-click experiment script parked at `/tmp/opencode/rt_turnstile_click.py` (headed patchright firefox, clicks challenges.cloudflare.com iframe, saves storage state). Never run.
 - Alternative once user passes CF manually in a real browser: harvest `bb_data` session cookie into the scraper's persistent session.
 
-## Filter/CLI knowledge (assessment for 4K + exclude flags — not yet implemented)
+## Filter/CLI knowledge (4K aliases + ! negation — implemented 2026-09-06)
 
 - All pattern filters (quality/codec/source-type/hdr) match `result.title` client-side; `QUALITY_PATTERNS['2160p']` already matches `2160p|4k|uhd`, `['1080p']` matches `1080p|fhd|full hd`. Only YTS has server-side quality (`QUALITY_MAP` incl. `4k`→`2160p`).
-- `-q 4k` today = unknown key → filters everything out. Planned: alias 4k/uhd→2160p, fhd→1080p at flag parsing (~15 lines).
-- `-qx 480p` syntax impossible in argparse (value-taking `-q` swallows `x`). Chosen design: value negation `-q '!480p'` handled in `FilterEngine._check_pattern` (covers all filter flags uniformly). A `-x` preprocessor rewriting argv is possible (~10 lines) but stateful/fragile — rejected. Interim: `--must-not-contain '2160p|4k|uhd'` works today.
+- `-q 4k` was an unknown key → filtered everything out. FIXED: `QUALITY_ALIASES` = {4k→2160p, uhd→2160p, fhd→1080p} in filters.py, resolved inside `_check_pattern` (case-insensitive, applied after stripping `!`).
+- `-qx 480p` syntax impossible in argparse (value-taking `-q` swallows `x`). IMPLEMENTED instead: value negation `-q '!480p'` in `FilterEngine._check_pattern` — leading `!` marks an exclude (exclude wins over include; all-exclude list passes unless matched); keys unknown in the primary pattern dict fall back across the engine's other dicts; covers quality/codec/source-type/hdr uniformly. A `-x` argv preprocessor (~10 lines) was considered and rejected as stateful/fragile. `--must-not-contain` remains the raw-regex alternative.
 
 ## Pagination (added 2026-09-06)
 

@@ -169,15 +169,19 @@ def parse_index_spec(spec: str, total: int) -> list[int]:
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="torrent-search",
-        description="Multi-source torrent search with filtering",
+        description=(
+            "Multi-source torrent search with filtering. Exclusion with single "
+            "quotes and ! prefix (ex. '!480p') works the same for --quality, "
+            "--codec, --source-type and --hdr"
+        ),
     )
     parser.add_argument("query", nargs="?", help="Search query")
     parser.add_argument("--sources", "-s", help="Comma-separated source names (default: all)")
     parser.add_argument("--min-seeders", type=int, default=0, help="Minimum seeders")
-    parser.add_argument("--quality", "-q", action="append", default=[], help="Quality: 2160p/4k/uhd, 1080p/fhd, 720p, 480p; prefix ! to exclude")
-    parser.add_argument("--codec", action="append", default=[], help="Codec: FLAC, AAC, DTS, etc.")
-    parser.add_argument("--source-type", action="append", default=[], dest="source_types", help="Source type: REMUX, WEB-DL, BLURAY, etc.")
-    parser.add_argument("--hdr", action="append", default=[], help="HDR: HDR, DOLBY_VISION, HDR10+")
+    parser.add_argument("--quality", "-q", action="append", default=[], help="Quality: 2160p/4k/uhd, 1080p/fhd, 720p, 480p; Exclude specific quality for ex. 480p, by using Single quotes and ! prefix like '!480p'")
+    parser.add_argument("--codec", action="append", default=[], help="Codec: FLAC, AAC, DTS, etc.; '!value' (quoted) excludes")
+    parser.add_argument("--source-type", action="append", default=[], dest="source_types", help="Source type: REMUX, WEB-DL, BLURAY, etc.; '!value' (quoted) excludes")
+    parser.add_argument("--hdr", action="append", default=[], help="HDR: HDR, DOLBY_VISION, HDR10+; '!value' (quoted) excludes")
     parser.add_argument("--min-size", type=float, default=0.0, help="Minimum size in GB")
     parser.add_argument("--max-size", type=float, default=float("inf"), help="Maximum size in GB")
     parser.add_argument("--must-contain", action="append", default=[], help="Keyword that must be in title")
