@@ -32,8 +32,15 @@ _READY_PROBES: dict[str, tuple[str, int]] = {
 
 
 def resolve_client(name: str) -> list[str]:
-    """Return the argv prefix that opens a URI in the named client."""
-    name = (name or "biglybt").strip().lower()
+    """Return the argv prefix that opens a URI in the named client.
+
+    Resolution order: registry launcher (flatpak) first, then any
+    executable on PATH. shutil.which() handles both bare names and
+    explicit --client paths (anything containing a "/" is checked
+    directly, case preserved).
+    """
+    raw = (name or "biglybt").strip()
+    name = raw.lower()
     launcher = _CLIENT_LAUNCHERS.get(name)
 
     if launcher and launcher[0] == "flatpak":
@@ -54,14 +61,16 @@ def resolve_client(name: str) -> list[str]:
     elif launcher:
         if shutil.which(launcher[0]) is None:
             launcher = None
-    else:
-        launcher = [name] if shutil.which(name) else None
+    if launcher is None and shutil.which(raw):
+        # Flatpak not installed / registry launcher missing: any executable
+        # named `raw` on PATH — or an explicit --client path — still works.
+        launcher = [raw]
 
-    if not launcher:
+    if launcher is None:
         raise FileNotFoundError(
-            f"Client {name!r} not found. BiglyBT is the default: "
-            f"`flatpak run com.biglybt.BiglyBT` must be installed, "
-            f"or pass --client pointing at a binary on PATH."
+            f"Client {name!r} not found. BiglyBT is the default: install "
+            f"the com.biglybt.BiglyBT flatpak, put `biglybt` on PATH, "
+            f"or pass --client pointing at an executable."
         )
     return launcher
 
@@ -217,6 +226,11 @@ async def download_results(results: list[SearchResult], client: str = "biglybt")
 
     name = (client or "biglybt").strip().lower()
     probe = _READY_PROBES.get(name)
+    if probe is None and launcher[0] != "flatpak":
+        # --client given as an explicit path/other name: key the warm-up
+        # wait off the resolved binary's basename so the same app still
+        # gets its cold-start protection.
+        probe = _READY_PROBES.get(launcher[0].rpartition("/")[2])
     if probe is not None and not _listener_up(*probe):
         # Cold start: launch one URI to boot the client, wait for its
         # control socket, then send everything again — args handed over
