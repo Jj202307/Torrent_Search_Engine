@@ -1,19 +1,31 @@
-# Changelog — Torrent Search Engine
+# Changelog
 
-Dated change history of the two research/build sessions. Current-state operational reference (date-free) lives in handover.md; day-by-day working notes live in work_trace_log.md.
+All notable changes to this project are documented in this file.
 
-## Session 2026-08-01 — initial research & 16-scraper build
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Initial research pass ranked torrent sites by ~count. Verified count: **RuTracker = 2.7M torrents** (Wikipedia, May 2026); all others are self-reported estimates. Sites removed by user from the final list: Nyaa.si, Pornolab.net, AnimeTosho, Skidrowreloaded, FitGirl Repacks, idope.se, BTDB. Excluded by criteria (paid/invite-only): IPTorrents, AnimeBytes, TorrentLeech.
+Current-state operational reference (date-free) lives in Handover_Torrent_Search_Engine_09_21_01:28.md; day-by-day working notes live in work_trace_log.md.
 
-Built the first 16 scrapers (parallel async, common `SearchResult` schema, client-side filter engine). Verification results: TPB `alive(): True` ("ubuntu" → 50 results); YTS `alive(): True` after the API fix ("avatar" 1080p min-seeders 10 → 3 results); all 16 scrapers import cleanly and `--list-sources` shows all 16; multi-source `"debian" --sources tpb,yts` returns combined filtered results.
+## [Unreleased]
 
-Bugs found & fixed:
-1. **YTS API moved**: old `yts.bz/api/v2` → 301. Fixed `config.py` `yts_api` → `https://movies-api.accel.li/api/v2`. Verified alive, returns torrents.
-2. **FilterEngine `_check_pattern` case bug**: `pattern_dict.get(key.upper())` failed because dict keys are lowercase (`1080p` vs `1080P`). Fix: `pattern_dict.get(key) or pattern_dict.get(key.upper()) or pattern_dict.get(key.lower())`. Quality/codec filters were silently returning 0 results before this fix.
-3. **Rich table clipping**: Seeders/Leechers columns appeared empty in bash-captured output — terminal-width capture clipping, not a code bug. Use `--format simple` for narrow terminals.
+### Added
+- FlareSolverr integration: async client (`torrent_search/flaresolverr.py`); rutracker search and dl.php magnet fallback via chrome136 replay with FS clearance cookies + solver User-Agent; extto search fallback.
+- Cookie harvesting from Firefox (native/snap/flatpak) and Opera (PBKDF2 AES decrypt of Chrome-format v10/v11 blobs), copied from locked sqlite DBs before read.
+- `--probe` diagnostic command: verifies the rutracker chain end-to-end (Firefox cookie harvest → FlareSolverr health → real search verdict via the scraper's FS fetch path).
+- User-Agent auto-detection from the installed Firefox at import time (cf_clearance is UA-bound; constant is fallback only).
+- extto browse-row parser (guest metadata: title/size/seeders; magnet intentionally empty — the guest magnet button is auth-gated AJAX).
 
-## Session 2026-09-06 — 16 → 19 scrapers, RuTracker bridge, filters, pagination, browse
+### Fixed
+- requirements.txt and pyproject.toml missing curl-cffi/tqdm/cryptography (curl-cffi was trapped in an unused `cloudflare` extra).
+- CLI `--timeout` default 30 → 180 (FlareSolverr solves take 15–40s+).
+- rutracker dl.php URL repair: search results joined against the bare site root produced dead URLs (now rewritten under `/forum/`).
+- Challenge detection for the Russian-language challenge page ("Один момент…").
+
+### Changed
+- rutracker/extto now route through FlareSolverr on HTTP 403/429/503 or challenge markers.
+
+## [2026-09-06] — 16 → 19 scrapers, RuTracker bridge, filters, pagination, browse
 
 - **16 → 19 scrapers**: added yourbittorrent.com, knaben.org, audiobookbay.lu; **snowfl.com dropped** (SPA with rotating-key JSON API — key vars no longer extractable from b.min.js). Site notes: yourbittorrent rows carry the same injected t0r.space spam as TorLock (filtered by relative-href); knaben `?query=` form is a status-dashboard stub, the real route is `/search/{query}`; audiobookbay is TCP-unreachable from this network (geo), verified via relay.
 - **Liveness sweep**: yts.mx dead (stopped Jan 2026 — scraper already on yts.bz + movies-api.accel.li, both live; yts.gg = current official gateway), torrentgalaxy.to dead (memecoin promo), glodls dead, zooqle.to dead, btdb.to dead, 7torrents dead, torrents.io dead, torrent.by dead, ilcorsaronero.info dead (hijacked), rarbg family dead (2023). Domain note: yourbitorrent.com (dead) ≠ yourbittorrent.com (live).
@@ -33,4 +45,15 @@ Bugs found & fixed:
 
 ### Commit chain
 
-74a32e5 (rutracker browse docs/examples) → 8e236fa (rename torrent-search → torrent_search_dl in user-facing text) → 717c832 (replace zero-row example queries with verified shapes) → b0cef61 (rebuild movies/tv-series presets from live tree walk) → b4096ab (forum-id reference tables in -h epilog) → dbea349 (no-keyword yts/eztvx browse, yts pagination fix, eztvx beta API). Current HEAD: **dbea349**, pushed.
+74a32e5 (rutracker browse docs/examples) → 8e236fa (rename torrent-search → torrent_search_dl in user-facing text) → 717c832 (replace zero-row example queries with verified shapes) → b0cef61 (rebuild movies/tv-series presets from live tree walk) → b4096ab (forum-id reference tables in -h epilog) → dbea349 (no-keyword yts/eztvx browse, yts pagination fix, eztvx beta API). Current HEAD at end of session: **dbea349**, pushed.
+
+## [2026-08-01] — initial research & 16-scraper build
+
+Initial research pass ranked torrent sites by ~count. Verified count: **RuTracker = 2.7M torrents** (Wikipedia, May 2026); all others are self-reported estimates. Sites removed by user from the final list: Nyaa.si, Pornolab.net, AnimeTosho, Skidrowreloaded, FitGirl Repacks, idope.se, BTDB. Excluded by criteria (paid/invite-only): IPTorrents, AnimeBytes, TorrentLeech.
+
+Built the first 16 scrapers (parallel async, common `SearchResult` schema, client-side filter engine). Verification results: TPB `alive(): True` ("ubuntu" → 50 results); YTS `alive(): True` after the API fix ("avatar" 1080p min-seeders 10 → 3 results); all 16 scrapers import cleanly and `--list-sources` shows all 16; multi-source `"debian" --sources tpb,yts` returns combined filtered results.
+
+Bugs found & fixed:
+1. **YTS API moved**: old `yts.bz/api/v2` → 301. Fixed `config.py` `yts_api` → `https://movies-api.accel.li/api/v2`. Verified alive, returns torrents.
+2. **FilterEngine `_check_pattern` case bug**: `pattern_dict.get(key.upper())` failed because dict keys are lowercase (`1080p` vs `1080P`). Fix: `pattern_dict.get(key) or pattern_dict.get(key.upper()) or pattern_dict.get(key.lower())`. Quality/codec filters were silently returning 0 results before this fix.
+3. **Rich table clipping**: Seeders/Leechers columns appeared empty in bash-captured output — terminal-width capture clipping, not a code bug. Use `--format simple` for narrow terminals.

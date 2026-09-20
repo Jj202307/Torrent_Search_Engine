@@ -425,9 +425,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rt-list-forums", "-L", dest="rt_list_forums", action="store_true",
                         help="List RuTracker presets and forum ids with descriptive names, then exit")
     parser.add_argument("--format", choices=["table", "json", "simple"], default="table", help="Output format")
-    parser.add_argument("--timeout", type=int, default=30, help="Total search timeout in seconds")
+    parser.add_argument("--timeout", type=int, default=180, help="Total search timeout in seconds (180 default: FlareSolverr solves take 15-40s)")
     parser.add_argument("--no-progress", action="store_true", help="Disable progress bar")
     parser.add_argument("--list-sources", action="store_true", help="List available sources and exit")
+    parser.add_argument("--probe", nargs="?", const="rutracker", metavar="SOURCE", help="Verify the protected-source pipeline end-to-end (default: rutracker): Firefox cookie harvest, VPN egress IP, FlareSolverr health, real search verdict via FlareSolverr. Exit 0 = chain OK; 1 = a layer is broken (named, with its fix).")
     parser.add_argument("--download", metavar="SPEC", help="Download results by index (e.g. 1,3-5 or all). Without a query, uses the last saved results.")
     parser.add_argument("--show", action="store_true", help="Re-print the last saved results with their indices.")
     parser.add_argument("--client", default="biglybt", help="BitTorrent client to hand magnets to (default: biglybt).")
@@ -442,6 +443,10 @@ def main():
         parser.error("--page must be >= 1")
     if args.rt_pages < 1:
         parser.error("--rt-pages must be >= 1")
+
+    if args.probe:
+        from .probe import run_probe
+        sys.exit(run_probe(args.probe))
 
     if args.rt_list_forums:
         print_rutracker_forums()

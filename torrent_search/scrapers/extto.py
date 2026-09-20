@@ -1,6 +1,10 @@
 """EXT.to scraper. Magnet-only indexer, Cloudflare-protected."""
 
-import httpx
+import logging
+import re
+from urllib.parse import urljoin
+
+from curl_cffi.requests import AsyncSession
 from bs4 import BeautifulSoup
 
 from ..base import BaseScraper, SearchResult, Source
@@ -11,6 +15,13 @@ from ..config import (
     MAX_RESULTS_PER_SOURCE,
 )
 from ..normalizer import parse_size, to_int
+
+logger = logging.getLogger(__name__)
+
+try:
+    from ..flaresolverr import solve_url as flaresolverr_solve
+except ImportError:
+    flaresolverr_solve = None
 
 SEARCH_URL = f"{SITE_URLS['extto']}/"
 
@@ -35,50 +46,100 @@ class EXTtoScraper(BaseScraper):
     source = Source.EXTTO
 
     def __init__(self):
-        self._client: httpx.AsyncClient | None = None
+        self._client: AsyncSession | None = None
 
-    async def _get_client(self) -> httpx.AsyncClient:
+    async def _get_client(self) -> AsyncSession:
         if self._client is None:
-            self._client = httpx.AsyncClient(
+            self._client = AsyncSession(
+                impersonate="firefox135",
                 timeout=DEFAULT_TIMEOUT,
                 headers=_BROWSER_HEADERS,
-                follow_redirects=True,
-                http2=True,
             )
         return self._client
+
+    def _is_challenge(self, html: str) -> bool:
+        """Detect Cloudflare JS-challenge page in response body."""
+        markers = (
+            "One moment...",
+            "challenges.cloudflare.com",
+            "Один момент",
+        )
+        return any(m in html for m in markers)
+
+    async def _fetch_via_flaresolverr(self, query: str) -> list[SearchResult]:
+        """Fall back to FlareSolverr when curl_cffi gets blocked."""
+        if flaresolverr_solve is None:
+            logger.warning("FlareSolverr client not available — import failed")
+            return []
+        # Site's own search form: <form action="/browse/"><input name="q">
+        # (GET /browse/?q=<query>). Plain /?q= returns the generic homepage
+        # listing (query ignored — verified via fixture).
+        url = f"{SITE_URLS['extto']}/browse/?q={query}"
+        try:
+            result = await flaresolverr_solve(url, session_id="extto")
+            if not result or not result.get("html"):
+                logger.warning("FlareSolverr returned no HTML for %s", url)
+                return []
+            return self._parse_html(result["html"])
+        except Exception:
+            logger.warning("FlareSolverr request failed for query '%s'", query)
+            return []
+
+    # Browse rows carry NO magnets for guests: the download button is
+    # <a class="dwn-btn search-magnet-btn" href="javascript:void(0);"
+    # data-id="8696336"> — an auth-gated AJAX endpoint. So rows are parsed
+    # metadata-only; magnet stays empty (never fabricated).
+    _DETAIL_HREF_RE = re.compile(r"/\S*?-\d+/$")
 
     def _parse_html(self, html: str) -> list[SearchResult]:
         soup = BeautifulSoup(html, "lxml")
         results = []
 
-        for a in soup.find_all("a", href=True):
+        for tr in soup.find_all("tr"):
             if len(results) >= MAX_RESULTS_PER_SOURCE:
                 break
-            href = a["href"]
-            if not href.startswith("magnet:"):
+            link = tr.find("a", class_="torrent-title-link")
+            if link is None:
+                link = tr.find("a", href=self._DETAIL_HREF_RE)
+            if link is None or not link.get("href"):
                 continue
             try:
-                container = a
-                parent = a.parent
-                if parent is not None:
-                    container = parent
-
-                title = a.get_text(" ", strip=True) or a.get("title", "").strip()
+                title = link.get_text(" ", strip=True)
                 if not title:
-                    title = href.split("dn=")[1].split("&")[0] if "dn=" in href else ""
+                    title = (link.get("data-tooltip") or "").strip()
+                if not title:
+                    continue
 
-                size_bytes = parse_size(container.get_text(" ", strip=True))
+                torrent_url = urljoin(SITE_URLS["extto"], link["href"])
 
-                seeders = leechers = 0
-                for sib in [parent, a.find_parent("tr"), a.find_parent("li"),
-                            a.find_parent("div"), a.parent]:
-                    if sib is None:
+                # Labeled cells: <span class="add-block">Size</span><span>1.35 GB</span>
+                size_text = seeds_text = leechs_text = ""
+                for td in tr.find_all("td"):
+                    label = td.find("span", class_="add-block")
+                    if not label:
                         continue
-                    text = sib.get_text(" ", strip=True)
-                    nums = [to_int(n) for n in text.replace(",", "").split() if n.isdigit()]
+                    name = label.get_text(strip=True).lower()
+                    spans = td.find_all("span")
+                    if len(spans) < 2:
+                        continue
+                    value = spans[-1].get_text(" ", strip=True)
+                    if name == "size":
+                        size_text = value
+                    elif name == "seeds":
+                        seeds_text = value
+                    elif name == "leechs":
+                        leechs_text = value
+
+                size_bytes = parse_size(size_text or tr.get_text(" ", strip=True))
+
+                seeders = to_int(seeds_text)
+                leechers = to_int(leechs_text)
+                if not seeders:
+                    # Fallback: trailing integer pair anywhere in the row.
+                    row_text = tr.get_text(" ", strip=True)
+                    nums = [to_int(n) for n in row_text.replace(",", "").split() if n.isdigit()]
                     if len(nums) >= 2:
                         seeders, leechers = nums[-2], nums[-1]
-                        break
 
                 results.append(SearchResult(
                     title=title,
@@ -86,8 +147,8 @@ class EXTtoScraper(BaseScraper):
                     size_bytes=size_bytes,
                     seeders=seeders,
                     leechers=leechers,
-                    magnet=href,
-                    torrent_url=href,
+                    magnet="",
+                    torrent_url=torrent_url,
                 ))
             except Exception:
                 continue
@@ -103,6 +164,8 @@ class EXTtoScraper(BaseScraper):
             params["sort"] = sort
 
         client = await self._get_client()
+
+        # Primary attempt: curl_cffi with all URL variants
         attempts = [
             (SEARCH_URL, params),
             (f"{SEARCH_URL}?q={query}", None),
@@ -113,12 +176,27 @@ class EXTtoScraper(BaseScraper):
         for url, p in attempts:
             try:
                 resp = await client.get(url, params=p)
+                if resp.status_code in (403, 429, 503):
+                    logger.warning(
+                        "EXT.to returned HTTP %s — Cloudflare challenge",
+                        resp.status_code,
+                    )
+                    return await self._fetch_via_flaresolverr(query)
                 resp.raise_for_status()
+                if self._is_challenge(resp.text):
+                    logger.warning("EXT.to JS-challenge detected — falling back to FlareSolverr")
+                    return await self._fetch_via_flaresolverr(query)
                 results = self._parse_html(resp.text)
                 if results:
                     return results
             except Exception:
                 continue
+
+        # All primary attempts failed — final FlareSolverr attempt
+        if flaresolverr_solve is not None:
+            logger.warning("All curl_cffi attempts failed — trying FlareSolverr")
+            return await self._fetch_via_flaresolverr(query)
+
         return []
 
     async def alive(self) -> bool:
@@ -132,5 +210,5 @@ class EXTtoScraper(BaseScraper):
 
     async def close(self):
         if self._client:
-            await self._client.aclose()
+            await self._client.close()
             self._client = None

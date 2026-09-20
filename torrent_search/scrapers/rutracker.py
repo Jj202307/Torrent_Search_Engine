@@ -3,23 +3,32 @@
 rutracker.org sits behind a Cloudflare managed challenge that 403s every
 plain HTTP client, and the forum needs a login. The working bypass:
 harvest the cf_clearance + bb_session cookies from the user's local
-Firefox profile (where the challenge was passed and the login done by
-hand) and replay them through curl_cffi's Firefox TLS impersonation.
+Firefox/Opera profiles (where the challenge was passed and the login
+done by hand) and replay them through curl_cffi's Firefox TLS
+impersonation.
 The session lives as long as the Firefox login does — if searches come
 back empty, re-login on rutracker.org in Firefox.
 """
 
 import asyncio
 import glob
+import hashlib
+import logging
 import os
 import re
 import shutil
 import sqlite3
+import subprocess
 import tempfile
 from urllib.parse import urljoin, urlencode
 
 from bs4 import BeautifulSoup
 from curl_cffi.requests import AsyncSession
+
+try:
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+except ImportError:
+    Cipher = algorithms = modes = None
 
 from ..base import BaseScraper, SearchResult, Source
 from ..config import (
@@ -29,7 +38,10 @@ from ..config import (
     CREDENTIALS,
 )
 from ..download import magnet_from_torrent
+from ..flaresolverr import solve_url as flaresolverr_solve
 from ..normalizer import parse_size
+
+logger = logging.getLogger(__name__)
 
 
 async def fetch_torrent_magnet(title: str, torrent_url: str) -> str:
@@ -37,8 +49,17 @@ async def fetch_torrent_magnet(title: str, torrent_url: str) -> str:
 
     dl.php sits behind the same Cloudflare clearance + login cookies as
     the forum, so it is unreachable for plain HTTP clients — the
-    downloader must go through this path. Returns '' on any failure.
+    downloader must go through this path. First try replays the
+    Firefox-harvested cookies through curl_cffi's Firefox TLS
+    impersonation; when CF still 403s, falls back to a FlareSolverr
+    solve + Chrome-family replay. Returns '' on any failure.
     """
+    # dl.php lives under /forum/ — repair URLs the parser joined against
+    # the bare site root (e.g. https://rutracker.org/dl.php?t=N).
+    if "dl.php" in torrent_url and "/forum/" not in torrent_url:
+        torrent_url = urljoin(
+            BASE_URL + "/", "forum/" + torrent_url.rsplit("/", 1)[-1]
+        )
     s = AsyncSession(
         impersonate="firefox135",
         timeout=DEFAULT_TIMEOUT,
@@ -50,17 +71,57 @@ async def fetch_torrent_magnet(title: str, torrent_url: str) -> str:
     )
     try:
         resp = await s.get(torrent_url)
-        if resp.status_code != 200 or resp.content[:1] != b"d":
-            return ""
-        return magnet_from_torrent(resp.content, title)
+        if resp.status_code == 200 and resp.content[:1] == b"d":
+            return magnet_from_torrent(resp.content, title)
     except Exception:
-        return ""
+        pass
     finally:
         await s.close()
+
+    content = await _fs_replay_bytes(torrent_url)
+    if content:
+        return magnet_from_torrent(content, title)
+    return ""
 
 BASE_URL = SITE_URLS["rutracker"]
 LOGIN_PAGE = f"{BASE_URL}/forum/login.php"
 SEARCH_URL = f"{BASE_URL}/forum/tracker.php"
+
+
+async def _fs_replay_bytes(url: str) -> bytes | None:
+    """Fetch a CF-guarded URL by FlareSolverr solve + Chrome replay.
+
+    FS solves the challenge for its own persistent Chrome session
+    (cookies only — no HTML needed); the target URL is then replayed
+    via curl_cffi impersonating the SOLVER's Chrome family so TLS
+    fingerprint, User-Agent and cookies all match the clearance
+    (standard working pattern, cf. jacred). Returns the raw body bytes
+    on success, None on any failure.
+    """
+    fs = await flaresolverr_solve(
+        BASE_URL + "/forum/index.php",
+        session_id="rutracker",
+        return_only_cookies=True,
+    )
+    if not fs or not fs.get("cookies"):
+        return None
+    s = AsyncSession(
+        impersonate="chrome136",
+        timeout=DEFAULT_TIMEOUT,
+        headers={"User-Agent": fs.get("userAgent", "")},
+        cookies={
+            c["name"]: c["value"] for c in fs["cookies"] if c.get("name")
+        },
+    )
+    try:
+        resp = await s.get(url)
+        if resp.status_code == 200 and resp.content[:1] == b"d":
+            return resp.content
+    except Exception:
+        pass
+    finally:
+        await s.close()
+    return None
 
 CATEGORY_IDS = {
     "films": 2090,
@@ -81,6 +142,9 @@ SORT_MAP = {"name": 1, "seeders": 2, "size": 3, "leechers": 4}
 PAGE_SIZE = 50
 PAGE_DELAY = 5.0   # seconds between page fetches — bursts burn the CF clearance
 MAX_PAGES = 10
+
+# Cloudflare challenge markers in the response body (Russian).
+_CHALLENGE_MARKERS = ("Один момент", "challenges.cloudflare.com")
 
 # Named forum presets (server-side scope narrowing via repeated f= params).
 # Preset keys are what the user types; labels are what humans read.
@@ -391,36 +455,152 @@ FORUM_NAMES: dict[int, str] = {
     fid: name for _, forums in FORUM_DIRECTORY for fid, name in forums
 }
 
-# Must match the browser the cookies were issued to (Firefox 153 ESR on
-# this machine) — cf_clearance is bound to the User-Agent.
-FIREFOX_UA = "Mozilla/5.0 (X11; Linux x86_64; rv:153.0) Gecko/20100101 Firefox/153.0"
+# cf_clearance is bound to the User-Agent, so this must match the browser
+# the cookies were issued to. Firefox (especially the snap) auto-updates,
+# so the version is detected from the installed browser at import time;
+# the constant is only a fallback when no firefox binary is found.
+_FIREFOX_UA_FALLBACK = (
+    "Mozilla/5.0 (X11; Linux x86_64; rv:152.0) Gecko/20100101 Firefox/152.0"
+)
+
+
+def _detect_firefox_ua() -> str:
+    """User-Agent of the locally installed Firefox, detected at import."""
+    for cmd in ("firefox --version", "flatpak run org.mozilla.firefox --version"):
+        try:
+            out = subprocess.run(
+                cmd.split(), capture_output=True, text=True, timeout=10
+            ).stdout
+        except Exception:
+            continue
+        m = re.search(r"rv:(\d+)", out)
+        if m:
+            return (
+                f"Mozilla/5.0 (X11; Linux x86_64; rv:{m.group(1)}.0) "
+                f"Gecko/20100101 Firefox/{m.group(1)}.0"
+            )
+    return _FIREFOX_UA_FALLBACK
+
+
+FIREFOX_UA = _detect_firefox_ua()
 
 USER_FIELDS = ("login_username", "username", "user", "login", "id")
 PASS_FIELDS = ("login_password", "password", "pass", "passwd")
 
 
-def _harvest_firefox_cookies() -> dict[str, str]:
-    """Pull rutracker.org cookies from every local Firefox profile.
+def _cookie_db_candidates() -> list[str]:
+    """Every Firefox/Opera cookie DB present, across packaging variants.
 
-    The sqlite DBs are copied first — Firefox holds locks on the lives.
+    Firefox (native, snap, flatpak) keeps one sqlite per profile with a
+    plaintext ``value`` column. Opera (native, snap) keeps a single
+    Chrome-format ``Cookies`` file whose ``encrypted_value`` holds
+    v10/v11 blobs. Deduped, deterministic order; later DBs overwrite
+    same-named cookies.
+    """
+    patterns = (
+        "~/.mozilla/firefox/*/cookies.sqlite",
+        "~/snap/firefox/common/.mozilla/firefox/*/cookies.sqlite",
+        "~/.var/app/org.mozilla.firefox/.mozilla/firefox/*/cookies.sqlite",
+        "~/.config/opera/Cookies",
+        "~/.config/opera/*/Cookies",
+        "~/snap/opera/common/.config/opera/Cookies",
+        "~/snap/opera/*/**/.config/opera*/Cookies",
+    )
+    seen: set[str] = set()
+    found: list[str] = []
+    for pat in patterns:
+        for db in sorted(glob.glob(os.path.expanduser(pat), recursive=True)):
+            if db not in seen:
+                seen.add(db)
+                found.append(db)
+    return found
+
+
+def _decrypt_opera_cookie(blob: bytes) -> str:
+    """AES-128-CBC decrypt a Chrome-on-Linux v10/v11 cookie blob."""
+    key = hashlib.pbkdf2_hmac("sha1", b"peanuts", b"saltysalt", 1, dklen=16)
+    if blob[:3] in (b"v10", b"v11"):
+        blob = blob[3:]
+    decryptor = Cipher(algorithms.AES(key), modes.CBC(b" " * 16)).decryptor()
+    padded = decryptor.update(blob) + decryptor.finalize()
+    pad = padded[-1]
+    if 1 <= pad <= 16:
+        padded = padded[:-pad]
+    return padded.decode("utf-8", errors="replace")
+
+
+def _harvest_opera_db(con: sqlite3.Connection, cookies: dict[str, str]) -> None:
+    """Merge rutracker cookies from one Chrome-format ``Cookies`` file."""
+    if Cipher is None:
+        logger.warning(
+            "cryptography not installed — Opera cookie DB skipped"
+            " (declared dependency; restore with: uv pip install"
+            " -r requirements.txt)"
+        )
+        return
+    rows = list(con.execute(
+        "select name, value, encrypted_value from cookies"
+        " where host_key like '%rutracker.org'"
+    ))
+    if not rows:
+        return
+    got: dict[str, str] = {}
+    failures = 0
+    for name, value, enc in rows:
+        if value:
+            got[name] = value
+            continue
+        if not enc:
+            continue
+        try:
+            dec = _decrypt_opera_cookie(enc)
+        except Exception:
+            failures += 1
+            continue
+        if dec and dec.isprintable():
+            got[name] = dec
+        else:
+            failures += 1
+    if failures and not got:
+        # Expected on modern Opera (keyring-encrypted v11 cookies) — not an
+        # error: the Firefox session is the operative one. Debug-level so it
+        # doesn't read like a login problem.
+        logger.debug(
+            "Opera cookie DB skipped: %d cookie(s) keyring-encrypted"
+            " (v11) — Firefox profile covers the session", failures
+        )
+        return
+    cookies.update(got)
+
+
+def _harvest_firefox_cookies() -> dict[str, str]:
+    """Pull rutracker.org cookies from every local Firefox/Opera profile.
+
+    Covers native, snap and flatpak installs on Ubuntu/openSUSE. The
+    sqlite DBs are copied first — the browsers hold locks on the live
+    ones. Firefox values are plaintext; Opera (Chrome format) values
+    are decrypted with the stock Linux key when possible.
     """
     cookies: dict[str, str] = {}
-    for db in glob.glob(os.path.expanduser("~/.mozilla/firefox/*/cookies.sqlite")):
+    for db in _cookie_db_candidates():
         tmp = None
         try:
             tmp = tempfile.mkdtemp(prefix="ffck_")
-            copy = os.path.join(tmp, "cookies.sqlite")
+            copy = os.path.join(tmp, os.path.basename(db))
             shutil.copy2(db, copy)
             for ext in ("wal", "shm"):
                 if os.path.exists(f"{db}-{ext}"):
                     shutil.copy2(f"{db}-{ext}", f"{copy}-{ext}")
             con = sqlite3.connect(copy)
             try:
-                for name, value in con.execute(
-                    "select name, value from moz_cookies"
-                    " where host like '%rutracker.org'"
-                ):
-                    cookies[name] = value
+                if os.path.basename(db) == "Cookies":
+                    _harvest_opera_db(con, cookies)
+                else:
+                    for name, value in con.execute(
+                        "select name, value from moz_cookies"
+                        " where host like '%rutracker.org'"
+                    ):
+                        cookies[name] = value
             finally:
                 con.close()
         except Exception:
@@ -618,41 +798,77 @@ class RuTrackerScraper(BaseScraper):
         pages = max(1, min(int(kwargs.get("pages") or 1), MAX_PAGES))
         merged: list[SearchResult] = []
         seen: set[str] = set()
-        try:
-            resp = await client.get(self._build_url(query, **kwargs))
-            if resp.status_code in (403, 429, 503):
+        search_url = self._build_url(query, **kwargs)
+
+        # Primary path: curl_cffi (fast, no sidecar dependency).
+        # Fall back to FlareSolverr when challenged.
+        resp = await client.get(search_url)
+        if resp.status_code in (403, 429, 503):
+            logger.warning(
+                "rutracker: Cloudflare challenge (HTTP %s) — trying FlareSolverr",
+                resp.status_code,
+            )
+            html = await self._fetch_via_flaresolverr(query, kwargs)
+            if not html:
                 return []
+        else:
             resp.raise_for_status()
             html = _decode(resp)
-            for r in self._parse_results(html, str(resp.url)):
-                key = _torrent_id(r.page_url)
-                if key not in seen:
-                    seen.add(key)
-                    merged.append(r)
 
-            # Deep paging: tracker.php?search_id=<token>&start=N*50. The
-            # token comes from the first response's own pagination links.
-            token = re.search(r"search_id=([\w-]{6,})", html)
-            for n in range(1, pages):
-                if token is None or len(merged) < n * PAGE_SIZE:
-                    break  # no token (single page) or previous page was short
-                await asyncio.sleep(PAGE_DELAY)
-                resp = await client.get(
-                    f"{SEARCH_URL}?search_id={token.group(1)}&start={n * PAGE_SIZE}"
-                )
-                if resp.status_code in (403, 429, 503):
-                    break  # keep whatever was collected
-                resp.raise_for_status()
-                new = [r for r in self._parse_results(_decode(resp), str(resp.url))
-                       if _torrent_id(r.page_url) not in seen]
-                if not new:
-                    break
-                for r in new:
-                    seen.add(_torrent_id(r.page_url))
-                merged.extend(new)
-            return merged
-        except Exception:
-            return merged
+        if self._is_challenge(html):
+            logger.warning("rutracker: JS challenge detected — trying FlareSolverr")
+            html = await self._fetch_via_flaresolverr(query, kwargs)
+        if not html:
+            return []
+
+        for r in self._parse_results(html, None):
+            key = _torrent_id(r.page_url)
+            if key not in seen:
+                seen.add(key)
+                merged.append(r)
+
+        # Deep paging: tracker.php?search_id=<token>&start=N*50.
+        token = re.search(r"search_id=([\w-]{6,})", html)
+        for n in range(1, pages):
+            if token is None or len(merged) < n * PAGE_SIZE:
+                break
+            await asyncio.sleep(PAGE_DELAY)
+            try:
+                if self._use_flaresolverr(html):
+                    resp_html = await self._fetch_via_flaresolverr(
+                        query, kwargs, search_id=token.group(1), start=n * PAGE_SIZE
+                    )
+                    if not resp_html:
+                        break
+                    resp = type("_R", (), {"url": search_url, "content": resp_html.encode()})()
+                else:
+                    resp = await client.get(
+                        f"{SEARCH_URL}?search_id={token.group(1)}&start={n * PAGE_SIZE}"
+                    )
+                    if resp.status_code in (403, 429, 503):
+                        resp_html = await self._fetch_via_flaresolverr(
+                            query, kwargs, search_id=token.group(1), start=n * PAGE_SIZE
+                        )
+                        if not resp_html:
+                            break
+                        resp = type("_R", (), {"url": search_url, "content": resp_html.encode()})()
+                    else:
+                        resp.raise_for_status()
+                        resp = type("_R", (), {
+                            "url": resp.url,
+                            "content": resp.content,
+                            "headers": resp.headers,
+                        })()
+            except Exception:
+                break
+            new = [r for r in self._parse_results(_decode(resp), str(resp.url))
+                   if _torrent_id(r.page_url) not in seen]
+            if not new:
+                break
+            for r in new:
+                seen.add(_torrent_id(r.page_url))
+            merged.extend(new)
+        return merged
 
     async def alive(self) -> bool:
         try:
@@ -666,3 +882,72 @@ class RuTrackerScraper(BaseScraper):
         if self._client:
             await self._client.close()
             self._client = None
+
+    @staticmethod
+    def _is_challenge(html: str) -> bool:
+        """Return True when the HTML body looks like a JS challenge page."""
+        if not html:
+            return False
+        return any(m in html for m in _CHALLENGE_MARKERS)
+
+    @staticmethod
+    def _use_flaresolverr(html: str) -> bool:
+        """Decide whether deep-paging should also ride FlareSolverr.
+
+        Once the first page was solved by FS, every subsequent page
+        likely needs the same treatment (same cleared session).
+        """
+        return bool(html and any(m in html for m in _CHALLENGE_MARKERS))
+
+    async def _fetch_via_flaresolverr(
+        self,
+        query: str,
+        kwargs: dict,
+        search_id: str | None = None,
+        start: int | None = None,
+    ) -> str | None:
+        """Fetch a search page through FlareSolverr and return raw HTML."""
+        params: list[tuple[str, str]] = []
+        if query and query.strip():
+            params.append(("nm", query))
+        forums: list[int] = list(kwargs.get("forums") or [])
+        category = kwargs.get("category")
+        if category:
+            preset = FORUM_PRESETS.get(str(category).lower())
+            if preset:
+                forums.extend(preset["forums"])
+            else:
+                cid = CATEGORY_IDS.get(str(category).lower(),
+                                       category if str(category).isdigit() else None)
+                if cid:
+                    forums.append(int(cid))
+        for fid in forums:
+            params.append(("f", str(fid)))
+        if search_id:
+            params.append(("search_id", search_id))
+        if start is not None:
+            params.append(("start", str(start)))
+
+        url = f"{SEARCH_URL}?{urlencode(params)}"
+
+        # Feed the harvested login session into FS's Chrome (cf_clearance
+        # excluded — it is UA-bound to Firefox and would poison the
+        # FlareSolverr session).
+        harvested = _harvest_firefox_cookies()
+        fs_cookies = [
+            {"name": n, "value": v, "domain": ".rutracker.org", "path": "/forum/"}
+            for n, v in harvested.items()
+            if n in ("bb_session", "bb_ssl", "bb_guid") and v
+        ]
+        if not fs_cookies:
+            logger.warning(
+                "rutracker: no login cookies harvested — FlareSolverr will"
+                " fetch as guest; search requires login"
+            )
+
+        result = await flaresolverr_solve(
+            url, session_id="rutracker", cookies=fs_cookies or None
+        )
+        if result and result.get("html"):
+            return result["html"]
+        return None

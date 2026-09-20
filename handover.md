@@ -1,5 +1,7 @@
 # Handover — Torrent Search Engine
 
+> **SUPERSEDED** (2026-09-21): Current operational reference is Handover_Torrent_Search_Engine_09_21_01:28.md. This document predates the Cloudflare hardening (2026-07-29) and FlareSolverr integration — rutracker/extto access instructions below no longer work as written. Kept for history.
+
 Durable, current-state operational reference for the Torrent Search Engine repo. Date history of the two build sessions lives in changelog.md; day-by-day working notes live in work_trace_log.md.
 
 ## What this project is
