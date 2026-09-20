@@ -15,12 +15,14 @@ Current-state operational reference (date-free) lives in Handover_Torrent_Search
 - `--probe` diagnostic command: verifies the rutracker chain end-to-end (Firefox cookie harvest → FlareSolverr health → real search verdict via the scraper's FS fetch path).
 - User-Agent auto-detection from the installed Firefox at import time (cf_clearance is UA-bound; constant is fallback only).
 - extto browse-row parser (guest metadata: title/size/seeders; magnet intentionally empty — the guest magnet button is auth-gated AJAX).
+- Persistent replay cache (commit cc0ca78): every successful FlareSolverr solve persists `{cookies, user_agent}` to `~/.cache/torrent_search/fs_replay_<host>.json` (0600 perms, atomic mkstemp→os.replace). Repeat requests replay the clearance via curl_cffi `impersonate="chrome136"` (~1-2s) instead of re-solving (30-60s). Invalidation is failure-driven only — 403/429/503, challenge markers, or unparseable rows clear the entry → fresh FS solve → cache re-saved; no TTL. Shared helpers in `flaresolverr.py`: `load_replay_cache` / `save_replay_cache` / `clear_replay_cache` / `replay_get` (text) / `replay_get_bytes` (binary). Wired into: rutracker search fast-path (before the direct attempt) + deep-paging pages + `_fs_replay_bytes` + `_fetch_via_flaresolverr`; extto search fast-path (browse URL with Referer) + persists. Measured: rutracker search warm 1.3s vs 62.3s cold (~47×), extto warm 1.8s vs 14.8s, .torrent magnet fetch warm 1.3s vs 30.5s.
 
 ### Fixed
 - requirements.txt and pyproject.toml missing curl-cffi/tqdm/cryptography (curl-cffi was trapped in an unused `cloudflare` extra).
 - CLI `--timeout` default 30 → 180 (FlareSolverr solves take 15–40s+).
 - rutracker dl.php URL repair: search results joined against the bare site root produced dead URLs (now rewritten under `/forum/`).
 - Challenge detection for the Russian-language challenge page ("Один момент…").
+- Deep-paging silent truncation at page 1 + mojibake (commit cc0ca78): deep paging built fake response objects without headers → `_decode`'s `resp.headers.get()` raised AttributeError, swallowed by the `except-break`, so paging silently stopped after page 1; str pages re-encoded utf-8 were also re-decoded as cp1251. Fix: declared `content-type: text/html; charset=utf-8` on all three fake responses — the rutracker replay path decodes via the existing `_decode` helper (windows-1251 default), so Cyrillic titles survive. Verified: `--rt-pages 2` → 100 rows, correct Cyrillic («июль 2026»), 7.3s for both pages.
 
 ### Changed
 - rutracker/extto now route through FlareSolverr on HTTP 403/429/503 or challenge markers.
