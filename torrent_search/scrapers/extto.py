@@ -19,9 +19,16 @@ from ..normalizer import parse_size, to_int
 logger = logging.getLogger(__name__)
 
 try:
-    from ..flaresolverr import solve_url as flaresolverr_solve
+    from ..flaresolverr import (
+        solve_url as flaresolverr_solve,
+        load_replay_cache,
+        save_replay_cache,
+        clear_replay_cache,
+        replay_get,
+    )
 except ImportError:
     flaresolverr_solve = None
+    load_replay_cache = save_replay_cache = clear_replay_cache = replay_get = None
 
 SEARCH_URL = f"{SITE_URLS['extto']}/"
 
@@ -80,6 +87,13 @@ class EXTtoScraper(BaseScraper):
             if not result or not result.get("html"):
                 logger.warning("FlareSolverr returned no HTML for %s", url)
                 return []
+            # Persist the clearance so the NEXT search replays it
+            # via curl_cffi instead of re-solving through FlareSolverr.
+            save_replay_cache(
+                "ext.to",
+                result.get("cookies") or [],
+                result.get("userAgent") or "",
+            )
             return self._parse_html(result["html"])
         except Exception:
             logger.warning("FlareSolverr request failed for query '%s'", query)
@@ -164,6 +178,21 @@ class EXTtoScraper(BaseScraper):
             params["sort"] = sort
 
         client = await self._get_client()
+
+        # Fast path: replay the cached FlareSolverr clearance via curl_cffi.
+        if flaresolverr_solve is not None and load_replay_cache("ext.to"):
+            hit = await replay_get(
+                f"{SITE_URLS['extto']}/browse/?q={query}", "ext.to",
+                referer=SITE_URLS["extto"],
+            )
+            if hit and hit[0] == 200 and not self._is_challenge(hit[1]):
+                results = self._parse_html(hit[1])
+                if results:
+                    logger.info(
+                        "EXT.to: replay-cache hit — skipping FlareSolverr solve"
+                    )
+                    return results
+            clear_replay_cache("ext.to")
 
         # Primary attempt: curl_cffi with all URL variants
         attempts = [

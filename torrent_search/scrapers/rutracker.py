@@ -38,7 +38,14 @@ from ..config import (
     CREDENTIALS,
 )
 from ..download import magnet_from_torrent
-from ..flaresolverr import solve_url as flaresolverr_solve
+from ..flaresolverr import (
+    solve_url as flaresolverr_solve,
+    load_replay_cache,
+    save_replay_cache,
+    clear_replay_cache,
+    replay_get,
+    replay_get_bytes,
+)
 from ..normalizer import parse_size
 
 logger = logging.getLogger(__name__)
@@ -98,6 +105,15 @@ async def _fs_replay_bytes(url: str) -> bytes | None:
     (standard working pattern, cf. jacred). Returns the raw body bytes
     on success, None on any failure.
     """
+    # Fast path: replay the cached clearance (~1-2s) instead of a fresh
+    # 30-60s FlareSolverr solve.
+    entry = load_replay_cache("rutracker.org")
+    if entry:
+        got = await replay_get_bytes(url, "rutracker.org")
+        if got and got[0] == 200 and got[1][:1] == b"d":
+            return got[1]
+        clear_replay_cache("rutracker.org")
+
     fs = await flaresolverr_solve(
         BASE_URL + "/forum/index.php",
         session_id="rutracker",
@@ -105,6 +121,8 @@ async def _fs_replay_bytes(url: str) -> bytes | None:
     )
     if not fs or not fs.get("cookies"):
         return None
+    # Persist the fresh clearance so the NEXT download skips the solve.
+    save_replay_cache("rutracker.org", fs["cookies"], fs.get("userAgent", ""))
     s = AsyncSession(
         impersonate="chrome136",
         timeout=DEFAULT_TIMEOUT,
@@ -800,20 +818,42 @@ class RuTrackerScraper(BaseScraper):
         seen: set[str] = set()
         search_url = self._build_url(query, **kwargs)
 
-        # Primary path: curl_cffi (fast, no sidecar dependency).
-        # Fall back to FlareSolverr when challenged.
-        resp = await client.get(search_url)
-        if resp.status_code in (403, 429, 503):
-            logger.warning(
-                "rutracker: Cloudflare challenge (HTTP %s) — trying FlareSolverr",
-                resp.status_code,
-            )
-            html = await self._fetch_via_flaresolverr(query, kwargs)
-            if not html:
-                return []
-        else:
-            resp.raise_for_status()
-            html = _decode(resp)
+        # Fast path: replay the cached FlareSolverr clearance via curl_cffi.
+        html: str | None = None
+        replay_ok = False
+        entry = load_replay_cache("rutracker.org")
+        if entry:
+            hit = await replay_get_bytes(search_url, "rutracker.org")
+            if hit and hit[0] == 200:
+                # tracker.php is windows-1251 — decode via the existing
+                # _decode helper (utf-8 would mangle Cyrillic titles).
+                page = _decode(type("_R", (), {
+                    "url": search_url, "content": hit[1], "headers": {},
+                })())
+                if not self._is_challenge(page) and self._parse_results(page, None):
+                    html = page
+                    replay_ok = True
+                    logger.info(
+                        "rutracker: replay-cache hit — skipping FlareSolverr solve"
+                    )
+            if html is None:
+                clear_replay_cache("rutracker.org")
+
+        if html is None:
+            # Primary path: curl_cffi (fast, no sidecar dependency).
+            # Fall back to FlareSolverr when challenged.
+            resp = await client.get(search_url)
+            if resp.status_code in (403, 429, 503):
+                logger.warning(
+                    "rutracker: Cloudflare challenge (HTTP %s) — trying FlareSolverr",
+                    resp.status_code,
+                )
+                html = await self._fetch_via_flaresolverr(query, kwargs)
+                if not html:
+                    return []
+            else:
+                resp.raise_for_status()
+                html = _decode(resp)
 
         if self._is_challenge(html):
             logger.warning("rutracker: JS challenge detected — trying FlareSolverr")
@@ -834,13 +874,40 @@ class RuTrackerScraper(BaseScraper):
                 break
             await asyncio.sleep(PAGE_DELAY)
             try:
-                if self._use_flaresolverr(html):
+                page_html: str | None = None
+                if replay_ok:
+                    # Replay pages through the cached clearance too.
+                    phit = await replay_get_bytes(
+                        f"{SEARCH_URL}?search_id={token.group(1)}&start={n * PAGE_SIZE}",
+                        "rutracker.org",
+                    )
+                    if phit and phit[0] == 200:
+                        page_html = _decode(type("_R", (), {
+                            "url": search_url, "content": phit[1], "headers": {},
+                        })())
+                        if self._is_challenge(page_html) \
+                                or not self._parse_results(page_html, None):
+                            page_html = None
+                    if page_html is None:
+                        replay_ok = False
+                        clear_replay_cache("rutracker.org")
+                if page_html is not None:
+                    # content is utf-8 re-encode of an already-decoded str:
+                    # declare charset so _decode round-trips it exactly.
+                    resp = type("_R", (), {
+                        "url": search_url, "content": page_html.encode(),
+                        "headers": {"content-type": "text/html; charset=utf-8"},
+                    })()
+                elif self._use_flaresolverr(html):
                     resp_html = await self._fetch_via_flaresolverr(
                         query, kwargs, search_id=token.group(1), start=n * PAGE_SIZE
                     )
                     if not resp_html:
                         break
-                    resp = type("_R", (), {"url": search_url, "content": resp_html.encode()})()
+                    resp = type("_R", (), {
+                        "url": search_url, "content": resp_html.encode(),
+                        "headers": {"content-type": "text/html; charset=utf-8"},
+                    })()
                 else:
                     resp = await client.get(
                         f"{SEARCH_URL}?search_id={token.group(1)}&start={n * PAGE_SIZE}"
@@ -851,7 +918,10 @@ class RuTrackerScraper(BaseScraper):
                         )
                         if not resp_html:
                             break
-                        resp = type("_R", (), {"url": search_url, "content": resp_html.encode()})()
+                        resp = type("_R", (), {
+                            "url": search_url, "content": resp_html.encode(),
+                            "headers": {"content-type": "text/html; charset=utf-8"},
+                        })()
                     else:
                         resp.raise_for_status()
                         resp = type("_R", (), {
@@ -949,5 +1019,12 @@ class RuTrackerScraper(BaseScraper):
             url, session_id="rutracker", cookies=fs_cookies or None
         )
         if result and result.get("html"):
+            # Persist the clearance so subsequent searches replay it
+            # via curl_cffi instead of re-solving through FlareSolverr.
+            save_replay_cache(
+                "rutracker.org",
+                result.get("cookies") or [],
+                result.get("userAgent") or "",
+            )
             return result["html"]
         return None
