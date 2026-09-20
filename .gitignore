@@ -6,3 +6,4 @@ HowToUse.md
 .opencode/
 .venv/
 venv/
+*.egg-info/
