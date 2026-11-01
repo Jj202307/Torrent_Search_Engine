@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import os
 import shutil
 import socket
 import subprocess
@@ -13,14 +14,12 @@ import httpx
 from .base import SearchResult
 from .config import DEFAULT_USER_AGENT
 
-# Name -> argv prefix used to open a URI in the client.
-# NOTE: BiglyBT's flatpak ships a broken wrapper (/app/bin/biglybt-runner
-# does `exec /app/biglybt/biglybt` WITHOUT "$@"), which drops every
-# argument — magnets never reach the app, cold or warm. Bypassing the
-# wrapper with --command delivers args to the real launcher script.
+# Name -> argv prefix used to open a URI in the client. BiglyBT is the
+# native install (launcher on PATH, e.g. /usr/local/bin/biglybt); it
+# forwards URI args to a running instance via its StartSocket and opens
+# them itself on a cold start.
 _CLIENT_LAUNCHERS: dict[str, list[str]] = {
-    "biglybt": ["flatpak", "run", "--command=/app/biglybt/biglybt",
-                "com.biglybt.BiglyBT"],
+    "biglybt": ["biglybt"],
 }
 
 # Clients with a local control socket we can wait on after a cold launch.
@@ -34,36 +33,21 @@ _READY_PROBES: dict[str, tuple[str, int]] = {
 def resolve_client(name: str) -> list[str]:
     """Return the argv prefix that opens a URI in the named client."""
     name = (name or "biglybt").strip().lower()
-    launcher = _CLIENT_LAUNCHERS.get(name)
-
-    if launcher and launcher[0] == "flatpak":
-        # argv like [flatpak, run, --command=..., APPID]: the app id is the
-        # first token after "run" that isn't an option.
-        app_id = next((t for t in launcher[2:] if not t.startswith("-")), None)
-        try:
-            ok = app_id is not None and subprocess.run(
-                ["flatpak", "info", app_id],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            ).returncode == 0
-        except OSError:
-            ok = False
-        if not ok:
-            launcher = None
-    elif launcher:
-        if shutil.which(launcher[0]) is None:
-            launcher = None
-    else:
-        launcher = [name] if shutil.which(name) else None
-
-    if not launcher:
+    launcher = _CLIENT_LAUNCHERS.get(name) or [name]
+    path = shutil.which(launcher[0])
+    if path is None:
         raise FileNotFoundError(
-            f"Client {name!r} not found. BiglyBT is the default: "
-            f"`flatpak run com.biglybt.BiglyBT` must be installed, "
-            f"or pass --client pointing at a binary on PATH."
+            f"Client {name!r} not found on PATH. BiglyBT is the default: "
+            f"the native `biglybt` launcher must be installed "
+            f"(e.g. /usr/local/bin/biglybt), or pass --client pointing "
+            f"at a binary on PATH."
         )
-    return launcher
+    # Resolve symlinks: BiglyBT's launcher derives its install dir from
+    # $0 without following symlinks, so a symlinked binary (e.g.
+    # /usr/local/bin/biglybt -> ~/biglybt/biglybt) gives it the wrong
+    # PROGRAM_DIR, the JVM classpath misses BiglyBT.jar, and the URI is
+    # silently dropped (launcher still exits 0). The real path works.
+    return [os.path.realpath(path), *launcher[1:]]
 
 
 def _skip_value(b: bytes, i: int) -> int:

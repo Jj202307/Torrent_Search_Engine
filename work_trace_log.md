@@ -163,7 +163,7 @@ torrent-search --show
 4. **No external accounts required** — all login-required sites are FREE registration (no invites), credentials via .env
 5. **Single common schema** — SearchResult dataclass unifies all sources for consistent filtering/sorting
 6. **Persisted result index** — every search saves its displayed results to `.cache/sessions/last_results.json`, so a followup `--download 1,3,4` works without re-querying
-7. **Client handoff** — `download.py` resolves the client (`flatpak run com.biglybt.BiglyBT` → `biglybt` binary → any `--client` on PATH) and opens each result's magnet (fallback: torrent URL, then hash-built magnet)
+7. **Client handoff** — `download.py` resolves the client (native `biglybt` launcher on PATH, or any `--client` on PATH) and opens each result's magnet (fallback: torrent URL, then hash-built magnet)
 
 ## Known Limitations
 

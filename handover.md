@@ -101,16 +101,16 @@ Registration touch points for any new source: `base.py` Source enum, `config.py`
 - Client-side filtering: only TPB (category) and YTS (quality/genre/rating) support server-side filters.
 - Login creds via `.env` (free-registration sites only).
 - Persisted result index: every search saves its displayed results (numbered 1..N) to `.cache/sessions/last_results.json` via `state.py`, so `--download 1,3,4` works without re-querying.
-- Client handoff: `download.py` opens each result's magnet in BiglyBT — launched via `flatpak run --command=/app/biglybt/biglybt com.biglybt.BiglyBT` (the stock flathub runner drops all CLI args), fallback `biglybt` binary, or any `--client` on PATH; missing magnets fall back to `torrent_url`, then a hash-built magnet.
+- Client handoff: `download.py` opens each result's magnet in BiglyBT — launched via the native `biglybt` launcher on PATH, symlink-resolved to its real path (e.g. `/home/je/biglybt/biglybt`), or any `--client` on PATH; missing magnets fall back to `torrent_url`, then a hash-built magnet.
 
 ## Download pipeline
 
-- `download.py` converts `.torrent` URLs to magnets client-side before handoff: fetch → bencode `_scan_torrent` (info-dict span + announce/announce-list trackers) → sha1 → `xt=urn:btih:` magnet with `dn`/`tr`. Hash verified against TPB's published magnet (e498d30e…). Needed because the BiglyBT flatpak sandbox can't fetch some mirrors and can't read `/tmp`.
+- `download.py` converts `.torrent` URLs to magnets client-side before handoff: fetch → bencode `_scan_torrent` (info-dict span + announce/announce-list trackers) → sha1 → `xt=urn:btih:` magnet with `dn`/`tr`. Hash verified against TPB's published magnet (e498d30e…). Kept because it makes handoff a single self-contained URI and avoids client-side fetch failures on flaky mirrors.
 - `ensure_magnet` (the fetching side): sends `DEFAULT_USER_AGENT`, 3 attempts with backoff, bencode validation; failed conversions fall back to the raw URL and the summary marks them `(direct URL — magnet conversion failed)`.
 - `rutracker.org` `.torrent` URLs route to rutracker's module-level `fetch_torrent_magnet()` — plain httpx can't reach `dl.php`.
 - BiglyBT client readiness is probed at `_READY_PROBES` (127.0.0.1:6880): first URI launches the client, the listener is polled up to 60s, then all URIs are resent (client dedupes), 0.25s stagger.
 - Alt clients: `--client qbittorrent` works via PATH fallback; qBittorrent is the recommendation if BiglyBT is dropped (magnet argv works cold+warm via single-instance IPC). ktorrent/rtorrent have handoff caveats.
-- BiglyBT flatpak data: `~/.var/app/com.biglybt.BiglyBT/.biglybt/` (downloads.config, torrents/, logs/); stop with `flatpak kill com.biglybt.BiglyBT`.
+- BiglyBT native install data: `~/.biglybt/` (downloads.config, torrents/, logs/); stop via the UI or `pkill -f BiglyBT.jar`.
 
 ## Key file map
 
