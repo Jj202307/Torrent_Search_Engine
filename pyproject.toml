@@ -14,10 +14,12 @@ dependencies = [
     "rich>=13.0.0",
     "python-dotenv>=1.0.0",
     "tenacity>=8.0.0",
+    "tqdm>=4.66.0",
+    "curl-cffi>=0.6.0",
+    "cryptography>=42.0",
 ]
 
 [project.optional-dependencies]
-cloudflare = ["curl-cffi>=0.6.0"]
 playwright = ["playwright>=1.40.0"]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "pytest-httpx>=0.30"]
 

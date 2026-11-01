@@ -14,12 +14,14 @@ import httpx
 from .base import SearchResult
 from .config import DEFAULT_USER_AGENT
 
-# Name -> argv prefix used to open a URI in the client. BiglyBT is the
-# native install (launcher on PATH, e.g. /usr/local/bin/biglybt); it
-# forwards URI args to a running instance via its StartSocket and opens
-# them itself on a cold start.
+# Name -> argv prefix used to open a URI in the client.
+# NOTE: BiglyBT's flatpak ships a broken wrapper (/app/bin/biglybt-runner
+# does `exec /app/biglybt/biglybt` WITHOUT "$@"), which drops every
+# argument — magnets never reach the app, cold or warm. Bypassing the
+# wrapper with --command delivers args to the real launcher script.
 _CLIENT_LAUNCHERS: dict[str, list[str]] = {
-    "biglybt": ["biglybt"],
+    "biglybt": ["flatpak", "run", "--command=/app/biglybt/biglybt",
+                "com.biglybt.BiglyBT"],
 }
 
 # Clients with a local control socket we can wait on after a cold launch.
@@ -31,23 +33,53 @@ _READY_PROBES: dict[str, tuple[str, int]] = {
 
 
 def resolve_client(name: str) -> list[str]:
-    """Return the argv prefix that opens a URI in the named client."""
-    name = (name or "biglybt").strip().lower()
-    launcher = _CLIENT_LAUNCHERS.get(name) or [name]
-    path = shutil.which(launcher[0])
-    if path is None:
+    """Return the argv prefix that opens a URI in the named client.
+
+    Resolution order: registry launcher (flatpak) first, then any
+    executable on PATH. shutil.which() handles both bare names and
+    explicit --client paths (anything containing a "/" is checked
+    directly, case preserved). Non-flatpak launchers are resolved via
+    os.path.realpath: BiglyBT's launcher derives PROGRAM_DIR from $0
+    without following symlinks, so invoking it through a symlink
+    (e.g. /usr/local/bin/biglybt -> ~/biglybt/biglybt) breaks the JVM
+    classpath and silently drops magnets.
+    """
+    raw = (name or "biglybt").strip()
+    name = raw.lower()
+    launcher = _CLIENT_LAUNCHERS.get(name)
+
+    if launcher and launcher[0] == "flatpak":
+        # argv like [flatpak, run, --command=..., APPID]: the app id is the
+        # first token after "run" that isn't an option.
+        app_id = next((t for t in launcher[2:] if not t.startswith("-")), None)
+        try:
+            ok = app_id is not None and subprocess.run(
+                ["flatpak", "info", app_id],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            ).returncode == 0
+        except OSError:
+            ok = False
+        if not ok:
+            launcher = None
+    elif launcher:
+        if shutil.which(launcher[0]) is None:
+            launcher = None
+    if launcher is None and shutil.which(raw):
+        # Flatpak not installed / registry launcher missing: any executable
+        # named `raw` on PATH — or an explicit --client path — still works.
+        launcher = [raw]
+
+    if launcher is None:
         raise FileNotFoundError(
-            f"Client {name!r} not found on PATH. BiglyBT is the default: "
-            f"the native `biglybt` launcher must be installed "
-            f"(e.g. /usr/local/bin/biglybt), or pass --client pointing "
-            f"at a binary on PATH."
+            f"Client {name!r} not found. BiglyBT is the default: install "
+            f"the com.biglybt.BiglyBT flatpak, put `biglybt` on PATH, "
+            f"or pass --client pointing at an executable."
         )
-    # Resolve symlinks: BiglyBT's launcher derives its install dir from
-    # $0 without following symlinks, so a symlinked binary (e.g.
-    # /usr/local/bin/biglybt -> ~/biglybt/biglybt) gives it the wrong
-    # PROGRAM_DIR, the JVM classpath misses BiglyBT.jar, and the URI is
-    # silently dropped (launcher still exits 0). The real path works.
-    return [os.path.realpath(path), *launcher[1:]]
+    if launcher is not None and launcher[0] != "flatpak":
+        launcher = [os.path.realpath(launcher[0])] + launcher[1:]
+    return launcher
 
 
 def _skip_value(b: bytes, i: int) -> int:
@@ -201,6 +233,11 @@ async def download_results(results: list[SearchResult], client: str = "biglybt")
 
     name = (client or "biglybt").strip().lower()
     probe = _READY_PROBES.get(name)
+    if probe is None and launcher[0] != "flatpak":
+        # --client given as an explicit path/other name: key the warm-up
+        # wait off the resolved binary's basename so the same app still
+        # gets its cold-start protection.
+        probe = _READY_PROBES.get(launcher[0].rpartition("/")[2])
     if probe is not None and not _listener_up(*probe):
         # Cold start: launch one URI to boot the client, wait for its
         # control socket, then send everything again — args handed over

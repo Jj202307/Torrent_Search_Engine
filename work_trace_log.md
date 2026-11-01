@@ -179,3 +179,15 @@ torrent-search --show
 - Core imports: `~/check_core.sh` — tests base.py, filters.py, normalizer.py
 - Scraper imports: `~/check_scrapers.sh` — tests each scraper module can be imported
 - End-to-end: `torrent-search "ubuntu" --sources tpb,yts --format json` — live API test
+
+## Working Notes
+
+### 2026-09-21 — CF wall → FlareSolverr → replay cache
+- CF hardening wall: engine matrix all-fail (httpx/curl_cffi direct 403, playwright/patchright, harvested-cookie replay on the raw path). VPN-switching theory disproven — differentiator is client fingerprint, not egress IP.
+- FlareSolverr path found: FS solves in its own Chrome; solution cookies + solver UA replayed via curl_cffi `impersonate="chrome136"`. FS victory via injection (Firefox login cookies into the FS session). Rutracker search + dl.php magnet fallback; extto browse fallback (guest metadata-only, magnet="" by design).
+- Wiring rounds 1-2: rutracker/extto route through FS on 403/429/503 or challenge markers; cookie harvesting (Firefox native/snap/flatpak + Opera v10/v11 PBKDF2-AES); extto browse-row parser; deps fixes (curl-cffi/tqdm/cryptography into core).
+- Probe rework: `--probe` verifies the real chain (Firefox cookies → FS health → real search verdict via the scraper's own FS fetch path); raw direct request demoted to informational.
+- Docs consolidation: changelog.md merged INTO CHANGELOG.md as dated sections; old handover.md bannered SUPERSEDED.
+- Replay-cache speedup (cc0ca78): successful FS solves persist `{cookies, user_agent}` to `~/.cache/torrent_search/fs_replay_<host>.json`; replays via chrome136 ~1-2s vs 30-60s cold solve; failure-driven invalidation only (no TTL). Measured: rutracker 1.3s vs 62.3s (~47×), extto 1.8s vs 14.8s, magnet fetch 1.3s vs 30.5s; corrupted cache self-heals.
+- Paging fix: fake deep-paging responses lacked headers → AttributeError swallowed by except-break truncated paging at page 1 (+ cp1251 mojibake); fixed with explicit `charset=utf-8`. `--rt-pages 2` → 100 rows, Cyrillic intact.
+- Commits: 2f3333b → 2a774a5 → cc0ca78. Runtime: FlareSolverr docker sidecar `flaresolverr` (host net, :8191, `/v1`, sessions `rutracker`/`extto`); VPN required (torrenting policy).
